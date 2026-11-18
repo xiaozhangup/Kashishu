@@ -1,18 +1,14 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="15 15.5 98 98">
-  <title>排箫应用图标：单色镂空版</title>
-  <defs>
-    <mask id="panflute-cutouts" maskUnits="userSpaceOnUse" x="0" y="0" width="128" height="128">
-      <rect width="128" height="128" fill="#fff"/>
-      <path d="M25 47q40-12 80 0" fill="none" stroke="#000" stroke-width="4" stroke-linecap="round"/>
-      <path fill="#000" d="M44 57c0-2.8 3.1-4.2 5.3-2.5l10.1 7.6c6 4.4 7.1 10.4 3.5 15.1-1.7 2.2-4.7 1-4.1-1.7.8-3.2-.1-5.4-2.9-7.4l-5.4-4v20.7c0 5.9-5.2 10-11.8 10.8-5.6.7-9.5-1.7-9.5-5.6 0-4.6 5-8.2 11.1-8.6 1.3-.1 2.5.1 3.7.5V57Z" transform="translate(0 -5)"/>
-    </mask>
-  </defs>
-  <g transform="translate(-1 -2)" fill="currentColor" mask="url(#panflute-cutouts)">
-    <rect x="18" y="28" width="18.8" height="85" rx="9.4"/>
-    <rect x="36.8" y="23" width="18.8" height="78" rx="9.4"/>
-    <rect x="55.6" y="20" width="18.8" height="69" rx="9.4"/>
-    <rect x="74.4" y="23" width="18.8" height="54" rx="9.4"/>
-    <rect x="93.2" y="28" width="18.8" height="37" rx="9.4"/>
-    <path d="M22 40.5q43-13 86 0 4 1.2 4 5V53q0 4.7-4.3 3.5-42.7-12.5-85.4 0Q18 57.7 18 53v-7.5q0-3.8 4-5Z"/>
+  <title>排箫应用图标：加长音符版</title>
+  <g transform="translate(-1 -2)">
+    <rect x="34.6" y="23" width="23.2" height="78" rx="7.2" fill="#aaaaaa"/>
+    <rect x="72.2" y="23" width="23.2" height="54" rx="7.2" fill="#aaaaaa"/>
+    <rect x="18" y="28" width="21" height="85" rx="7.2" fill="#707070"/>
+    <rect x="53.4" y="20" width="23.2" height="69" rx="7.2" fill="#707070"/>
+    <rect x="91" y="28" width="21" height="37" rx="7.2" fill="#707070"/>
+    <rect x="20" y="35.5" width="24" height="18.8" rx="6" fill="#dcdcdc"/>
+    <rect x="86" y="33" width="24" height="18.8" rx="6" fill="#dcdcdc"/>
+    <rect x="36" y="30" width="56" height="18.8" rx="6" fill="#ededed"/>
+    <path fill="#fff" d="M44 57c0-2.8 3.1-4.2 5.3-2.5l10.1 7.6c6 4.4 7.1 10.4 3.5 15.1-1.7 2.2-4.7 1-4.1-1.7.8-3.2-.1-5.4-2.9-7.4l-5.4-4v20.7c0 5.9-5.2 10-11.8 10.8-5.6.7-9.5-1.7-9.5-5.6 0-4.6 5-8.2 11.1-8.6 1.3-.1 2.5.1 3.7.5V57Z"/>
   </g>
 </svg>
