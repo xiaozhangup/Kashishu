@@ -130,7 +130,7 @@ internal sealed class SoloistService(
             return command.Action switch
             {
                 PlaybackAction.PlayPause => await SendAsync(snapshot.IsPlaying ? "pause" : "play", token),
-                PlaybackAction.Previous => await SendAsync("skip_prev", token),
+                PlaybackAction.Previous => await SkipPreviousAsync(snapshot, token),
                 PlaybackAction.Next => await SendAsync("skip_next", token),
                 PlaybackAction.Seek when snapshot.Track is { } track => await SendAsync("seek", token,
                     "position_ms", (long)Math.Clamp(command.Value, 0, track.DurationMs)),
@@ -213,6 +213,77 @@ internal sealed class SoloistService(
     }
 
     internal Task WaitForLibraryAsync() => _library.WaitForLibraryAsync();
+
+    private const long PreviousTrackSeekThresholdMs = 1_500;
+
+    internal static bool ShouldSeekBeforeSkipPrevious(PlaybackSnapshot snapshot) =>
+        snapshot.Track is not null && snapshot.Controls.CanSeek && snapshot.PositionMs >= PreviousTrackSeekThresholdMs;
+
+    private async Task<string?> SkipPreviousAsync(PlaybackSnapshot snapshot, CancellationToken token)
+    {
+        if (snapshot.Track is not { Id: var trackId })
+            return await SendAsync("skip_prev", token);
+
+        if (ShouldSeekBeforeSkipPrevious(snapshot))
+        {
+            if (await SendAsync("seek", token, "position_ms", 0L) is null)
+                await WaitForStoreConditionAsync(
+                    s => s.Track?.Id != trackId || s.PositionMs < PreviousTrackSeekThresholdMs,
+                    TimeSpan.FromMilliseconds(140),
+                    token);
+            return await SendAsync("skip_prev", token);
+        }
+
+        var error = await SendAsync("skip_prev", token);
+        if (error is not null || snapshot.PositionMs < PreviousTrackSeekThresholdMs)
+            return error;
+
+        // If seeking isn't advertised, retry skip_prev once when Spotify only restarted the current track.
+        var restarted = await WaitForStoreConditionAsync(
+            s => s.Track?.Id != trackId || s.PositionMs < PreviousTrackSeekThresholdMs,
+            TimeSpan.FromMilliseconds(180),
+            token);
+        return restarted && store.Snapshot is { Track.Id: var id, PositionMs: < PreviousTrackSeekThresholdMs } && id == trackId
+            ? await SendAsync("skip_prev", token)
+            : null;
+    }
+
+    private async Task<bool> WaitForStoreConditionAsync(
+        Func<PlaybackSnapshot, bool> predicate,
+        TimeSpan timeout,
+        CancellationToken token)
+    {
+        if (predicate(store.Snapshot))
+            return true;
+
+        var reached = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        void OnChanged(object? sender, EventArgs args)
+        {
+            if (predicate(store.Snapshot))
+                reached.TrySetResult(true);
+        }
+
+        store.Changed += OnChanged;
+        try
+        {
+            if (predicate(store.Snapshot))
+                return true;
+            using var delayCts = CancellationTokenSource.CreateLinkedTokenSource(token);
+            var delayTask = Task.Delay(timeout, delayCts.Token);
+            var completed = await Task.WhenAny(reached.Task, delayTask);
+            if (completed == reached.Task)
+            {
+                delayCts.Cancel();
+                return true;
+            }
+            token.ThrowIfCancellationRequested();
+            return predicate(store.Snapshot);
+        }
+        finally
+        {
+            store.Changed -= OnChanged;
+        }
+    }
 
     private async Task<string?> SetRepeatAsync(double mode, CancellationToken token)
     {

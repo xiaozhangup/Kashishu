@@ -1470,6 +1470,14 @@ internal static class SelfCheck
         Require(queue.IsActive && queue.Count == 3 && started?.Uri == t1.Uri && queue.Position == 1,
             "library queue start");
         var playingTrack = demoTrack with { Id = "1111111111111111111111", DurationMs = t1.DurationMs };
+        Require(SoloistService.ShouldSeekBeforeSkipPrevious(
+                new PlaybackSnapshot(playingTrack, 25_000, Stopwatch.GetTimestamp(), true, "playing")
+                { Controls = new PlaybackControls(true, true, true, true) }),
+            "soloist previous seeks to start past threshold");
+        Require(!SoloistService.ShouldSeekBeforeSkipPrevious(
+                new PlaybackSnapshot(playingTrack, 500, Stopwatch.GetTimestamp(), true, "playing")
+                { Controls = new PlaybackControls(true, true, true, true) }),
+            "soloist previous skips directly near start");
         Require(queue.ObserveSnapshot(new PlaybackSnapshot(playingTrack, 178_500, Stopwatch.GetTimestamp(), true, "playing")) is null,
             "library queue stays on playing track");
         var advanced = queue.ObserveSnapshot(new PlaybackSnapshot(playingTrack, 179_200, Stopwatch.GetTimestamp(), false, "idle"));
