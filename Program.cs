@@ -1484,6 +1484,41 @@ internal static class SelfCheck
         Require(advanced?.Uri == t2.Uri && queue.Position == 2,
             "library queue auto-advance on completion");
 
+        var veryHighPrefs = SoloistProcess.UpdatePrefsContent(
+            "core.clock_delta=0\naudio.play_bitrate_enumeration=3\n",
+            SoloistAudioQuality.VeryHigh);
+        Require(veryHighPrefs.Contains("core.clock_delta=0", StringComparison.Ordinal)
+                && veryHighPrefs.Contains("audio.play_bitrate_enumeration=4", StringComparison.Ordinal)
+                && veryHighPrefs.Contains("audio.play_bitrate_non_metered_enumeration=4", StringComparison.Ordinal),
+            "soloist quality very high prefs");
+        var losslessPrefs = SoloistProcess.UpdatePrefsContent(veryHighPrefs, SoloistAudioQuality.Lossless);
+        Require(losslessPrefs.Contains("audio.play_bitrate_enumeration=5", StringComparison.Ordinal)
+                && !losslessPrefs.Contains("audio.play_bitrate_enumeration=4", StringComparison.Ordinal),
+            "soloist quality lossless prefs");
+        var autoPrefs = SoloistProcess.UpdatePrefsContent(losslessPrefs, SoloistAudioQuality.Automatic);
+        Require(autoPrefs.Contains("core.clock_delta=0", StringComparison.Ordinal)
+                && !autoPrefs.Contains("play_bitrate_enumeration", StringComparison.Ordinal),
+            "soloist quality auto clears overrides");
+
+        var contextRequest = LibraryPage.BuildPlayRequest("spotify:playlist:pl_1", [t1, t2, t3], t2, shuffle: null);
+        Require(contextRequest is not null
+                && contextRequest.ContextUri == "spotify:playlist:pl_1"
+                && contextRequest.StartTrackUri == t2.Uri
+                && contextRequest.TrackUris is null,
+            "playlist playback builds context request");
+        var contextPayload = SpotifyService.BuildPlayPayload(contextRequest!);
+        Require(contextPayload.Contains("\"context_uri\":\"spotify:playlist:pl_1\"", StringComparison.Ordinal)
+                && contextPayload.Contains(t2.Uri, StringComparison.Ordinal),
+            "playlist play payload JSON");
+
+        var urisRequest = LibraryPage.BuildPlayRequest(null, [t1, t2, tracksPage.Items[1], t3], t2, shuffle: false);
+        Require(urisRequest is not null
+                && urisRequest.ContextUri is null
+                && urisRequest.StartTrackUri == t2.Uri
+                && urisRequest.TrackUris is { Count: 3 }
+                && urisRequest.TrackUris[0] == t1.Uri,
+            "collection playback builds uris queue");
+
         using var surface = SKSurface.Create(new SKImageInfo(1120, 720, SKColorType.Rgba8888, SKAlphaType.Premul));
         using var renderer = new LyricsWindowRenderer();
         renderer.Draw(surface.Canvas, 1120, 720,

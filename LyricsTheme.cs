@@ -37,6 +37,7 @@ internal static class LyricsTheme
     public static readonly SolidColorBrush AccentPressed = new();
     public static readonly SolidColorBrush NavActive = new();
     public static readonly SolidColorBrush DropDownBackground = new();
+    public static readonly SolidColorBrush DockBackground = new();
 
     static LyricsTheme() => ApplyCover(null);
 
@@ -60,6 +61,11 @@ internal static class LyricsTheme
         OnAccent.Color = Color.FromRgb((byte)(accent.Red * .08f), (byte)(accent.Green * .08f), (byte)(accent.Blue * .08f));
         NavActive.Color = Color.FromArgb(0x30, accent.Red, accent.Green, accent.Blue);
         DropDownBackground.Color = Color.FromRgb((byte)(a.Red * .22f), (byte)(a.Green * .22f), (byte)(a.Blue * .22f));
+        DockBackground.Color = Color.FromArgb(
+            0xE4,
+            (byte)Math.Clamp((a.Red + b.Red) * .155f + 5f, 0, 255),
+            (byte)Math.Clamp((a.Green + b.Green) * .155f + 8f, 0, 255),
+            (byte)Math.Clamp((a.Blue + b.Blue) * .155f + 12f, 0, 255));
         PageBackground.GradientStops[0].Color = Tint(a, -.45f);
         PageBackground.GradientStops[1].Color = Tint(a, -.65f);
         PageBackground.GradientStops[2].Color = Tint(b, -.66f);

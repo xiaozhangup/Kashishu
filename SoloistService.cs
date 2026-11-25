@@ -71,7 +71,7 @@ internal sealed class SoloistService(
     private async Task RunClientAsync(string executable, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        await using var process = SoloistProcess.Start(executable, settings.SoloistApiKey);
+        await using var process = SoloistProcess.Start(executable, settings.SoloistApiKey, settings.SoloistQuality);
         var endpoint = await process.ReadEndpointAsync(cancellationToken);
         // Retry a dropped WebSocket without restarting the paired audio process.
         for (var retry = 0; retry < 3; retry++)
@@ -157,6 +157,38 @@ internal sealed class SoloistService(
             if (!Volatile.Read(ref _active) && await SendAsync("activate", linked.Token) is { } error)
                 return error;
             return await SendAsync("play", linked.Token, "uri", uri);
+        }
+        finally { _controls.Release(); }
+    }
+
+    public async Task<LibraryPlayResult> PlayContextAsync(LibraryPlayRequest request, CancellationToken token)
+    {
+        if (request.StartTrackUri is { } startUri
+            && (SongBanner.SpotifyUrl(startUri, PlaybackSourcePreference.Soloist) is null
+                || !startUri.StartsWith("spotify:track:", StringComparison.Ordinal)))
+            return new(false, "这首歌曲无法在 Soloist 播放");
+
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(token, lifetime);
+        await _controls.WaitAsync(linked.Token);
+        try
+        {
+            var wasActive = Volatile.Read(ref _active);
+            if (!wasActive && await SendAsync("activate", linked.Token) is { } activateError)
+                return new(false, activateError);
+
+            if (request.Shuffle is bool shuffle)
+                await SendAsync("set_shuffle", linked.Token, "enabled", shuffle);
+
+            if (!wasActive)
+                await Task.Delay(120, linked.Token);
+
+            if (await _library.StartLibraryPlaybackAsync(request, SoloistProcess.DeviceName, linked.Token))
+                return new(true, null);
+
+            if (request.StartTrackUri is { } fallbackUri)
+                return new(false, await SendAsync("play", linked.Token, "uri", fallbackUri));
+
+            return new(false, "当前无法从此列表开始播放");
         }
         finally { _controls.Release(); }
     }

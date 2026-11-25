@@ -19,7 +19,16 @@ internal interface ISpotifyLibrary
     Task<IReadOnlyDictionary<string, bool>> CheckFavoritesAsync(IReadOnlyList<string> uris, CancellationToken token);
     Task SetFavoriteAsync(string uri, bool saved, CancellationToken token);
     Task<string?> PlayTrackAsync(string uri, CancellationToken token);
+    Task<LibraryPlayResult> PlayContextAsync(LibraryPlayRequest request, CancellationToken token);
 }
+
+internal sealed record LibraryPlayRequest(
+    string? ContextUri,
+    string? StartTrackUri,
+    IReadOnlyList<string>? TrackUris = null,
+    bool? Shuffle = null);
+
+internal sealed record LibraryPlayResult(bool ManagedByServer, string? Error = null);
 
 internal sealed record LibraryPageResult<T>(IReadOnlyList<T> Items, int? NextOffset, int? Total = null);
 
@@ -183,6 +192,124 @@ internal sealed partial class SpotifyService
             saved ? HttpMethod.Put : HttpMethod.Delete,
             "/me/library?uris=" + Uri.EscapeDataString(uri),
             token);
+    }
+
+    private string? _soloistDeviceId;
+
+    internal static string BuildPlayPayload(LibraryPlayRequest request)
+    {
+        var payload = new Dictionary<string, object?>();
+        if (!string.IsNullOrWhiteSpace(request.ContextUri))
+            payload["context_uri"] = request.ContextUri;
+        else if (request.TrackUris is { Count: > 0 } uris)
+            payload["uris"] = uris;
+        else if (!string.IsNullOrWhiteSpace(request.StartTrackUri))
+            payload["uris"] = new[] { request.StartTrackUri };
+
+        if (!string.IsNullOrWhiteSpace(request.StartTrackUri))
+            payload["offset"] = new Dictionary<string, string> { ["uri"] = request.StartTrackUri };
+
+        return JsonSerializer.Serialize(payload);
+    }
+
+    internal async Task<bool> StartLibraryPlaybackAsync(
+        LibraryPlayRequest request,
+        string preferredDeviceName,
+        CancellationToken token)
+    {
+        if (string.IsNullOrWhiteSpace(request.ContextUri)
+            && (request.TrackUris is null || request.TrackUris.Count == 0)
+            && string.IsNullOrWhiteSpace(request.StartTrackUri))
+            return false;
+
+        await _playerGate.WaitAsync(token);
+        try
+        {
+            token.ThrowIfCancellationRequested();
+            if (_credentials.ClientId.Length == 0 || _credentials.ClientSecret.Length == 0)
+                return false;
+
+            _tokens ??= await LoadTokenAsync(token);
+            if (!HasScope(ControlScope))
+                return false;
+            if (_tokens!.ExpiresAt <= DateTimeOffset.UtcNow.AddSeconds(30))
+                _tokens = await RefreshLibraryAsync(token);
+
+            var payload = BuildPlayPayload(request);
+            var deviceId = Volatile.Read(ref _soloistDeviceId);
+            for (var attempt = 0; attempt < 3; attempt++)
+            {
+                var path = string.IsNullOrEmpty(deviceId)
+                    ? "/me/player/play"
+                    : "/me/player/play?device_id=" + Uri.EscapeDataString(deviceId);
+                using var timeout = CancellationTokenSource.CreateLinkedTokenSource(token);
+                timeout.CancelAfter(TimeSpan.FromSeconds(10));
+                using var httpRequest = new HttpRequestMessage(HttpMethod.Put, "https://api.spotify.com/v1" + path)
+                {
+                    Content = new StringContent(payload, System.Text.Encoding.UTF8, "application/json")
+                };
+                httpRequest.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _tokens!.AccessToken);
+                using var response = await Http.SendAsync(httpRequest, HttpCompletionOption.ResponseHeadersRead, timeout.Token);
+                if (response.IsSuccessStatusCode)
+                {
+                    Interlocked.Increment(ref _positionSyncVersion);
+                    _pollWake.Release();
+                    return true;
+                }
+
+                if (response.StatusCode == HttpStatusCode.Unauthorized && attempt == 0)
+                {
+                    _tokens = await RefreshLibraryAsync(token);
+                    continue;
+                }
+
+                if (response.StatusCode == HttpStatusCode.NotFound && attempt < 2)
+                {
+                    if (attempt > 0)
+                        await Task.Delay(200, token);
+                    deviceId = await ResolveDeviceIdAsync(preferredDeviceName, token);
+                    Volatile.Write(ref _soloistDeviceId, deviceId);
+                    if (!string.IsNullOrEmpty(deviceId))
+                        continue;
+                    if (attempt == 0)
+                        continue;
+                }
+                return false;
+            }
+            return false;
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { throw; }
+        catch
+        {
+            return false;
+        }
+        finally
+        {
+            _playerGate.Release();
+        }
+    }
+
+    private async Task<string?> ResolveDeviceIdAsync(string preferredDeviceName, CancellationToken token)
+    {
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(token);
+        timeout.CancelAfter(TimeSpan.FromSeconds(8));
+        using var request = new HttpRequestMessage(HttpMethod.Get, "https://api.spotify.com/v1/me/player/devices");
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _tokens!.AccessToken);
+        using var response = await Http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, timeout.Token);
+        if (!response.IsSuccessStatusCode)
+            return null;
+        await using var stream = await response.Content.ReadAsStreamAsync(timeout.Token);
+        using var doc = await JsonDocument.ParseAsync(stream, cancellationToken: timeout.Token);
+        if (!doc.RootElement.TryGetProperty("devices", out var devices) || devices.ValueKind != JsonValueKind.Array)
+            return null;
+        foreach (var device in devices.EnumerateArray())
+        {
+            if (device.ValueKind == JsonValueKind.Object
+                && GetString(device, "name") == preferredDeviceName
+                && GetString(device, "id") is { Length: > 0 } id)
+                return id;
+        }
+        return null;
     }
 
     internal static LibraryPageResult<LibraryTrack> ParseTracksPage(JsonElement root, int offset)

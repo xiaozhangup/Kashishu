@@ -135,12 +135,11 @@ internal sealed class LibraryPage : UserControl
 
     // Bottom floating dock
     private readonly Grid _miniBar;
-    private readonly SolidColorBrush _dockBaseBrush = new(Color.FromArgb(0xE4, 20, 24, 32));
+    private readonly Border _dockSurface;
+    private Color? _dockColor;
     private readonly LibraryArtTile _miniCover;
     private readonly TextBlock _miniTitle = Ui.Text("选择歌曲开始播放", 13, FontWeight.SemiBold);
     private readonly TextBlock _miniSubtitle = Ui.Text("", 11.5, muted: true);
-    private readonly Border _miniQueueBadge;
-    private readonly TextBlock _miniQueueText = Ui.Text("", 10.5, FontWeight.SemiBold);
     private readonly Button _miniPrev;
     private readonly Button _miniPlayPause;
     private readonly PathIcon _miniPlayIcon;
@@ -490,16 +489,6 @@ internal sealed class LibraryPage : UserControl
         _miniSubtitle.TextWrapping = TextWrapping.NoWrap;
         _miniSubtitle.TextTrimming = TextTrimming.CharacterEllipsis;
         _miniSubtitle.FontSize = 11.5;
-        _miniQueueText.Foreground = LyricsTheme.Accent;
-        _miniQueueBadge = new Border
-        {
-            Background = LyricsTheme.NavActive,
-            CornerRadius = new CornerRadius(LyricsTheme.PillRadius),
-            Padding = new Thickness(9, 3),
-            VerticalAlignment = VerticalAlignment.Center,
-            IsVisible = false,
-            Child = _miniQueueText
-        };
         _miniPrev = CompactIconButton("上一首", LibraryIcons.Previous, 15);
         _miniPrev.Width = _miniPrev.Height = 34;
         _miniPrev.CornerRadius = new CornerRadius(17);
@@ -550,10 +539,10 @@ internal sealed class LibraryPage : UserControl
         _dockPlayAll.Classes.Set("accent", false);
         _dockPlayAll.Classes.Set("glass", true);
         _dockPlayAll.Content = DockButtonLabel(LibraryIcons.Play, "播放全部", LyricsTheme.PrimaryText);
-        _dockPlayAll.Click += (_, _) =>
+        _dockPlayAll.Click += async (_, _) =>
         {
             var pane = ActiveTrackPane();
-            PlayQueue(ActiveListTitle(), pane.VisibleTracks, null, shuffle: false);
+            await PlayFromListAsync(pane.VisibleTracks, null, shuffle: false, ActiveContextUri(pane));
         };
 
         _dockShuffle.Height = 34;
@@ -561,10 +550,10 @@ internal sealed class LibraryPage : UserControl
         _dockShuffle.CornerRadius = new CornerRadius(LyricsTheme.PillRadius);
         _dockShuffle.FontSize = 12.5;
         _dockShuffle.Content = DockButtonLabel(LibraryIcons.Shuffle, "随机", LyricsTheme.PrimaryText);
-        _dockShuffle.Click += (_, _) =>
+        _dockShuffle.Click += async (_, _) =>
         {
             var pane = ActiveTrackPane();
-            PlayQueue(ActiveListTitle(), pane.VisibleTracks, null, shuffle: true);
+            await PlayFromListAsync(pane.VisibleTracks, null, shuffle: true, ActiveContextUri(pane));
         };
 
         _dockOpenSpotify.Width = 34;
@@ -577,18 +566,11 @@ internal sealed class LibraryPage : UserControl
         AutomationProperties.SetName(_dockOpenSpotify, "在 Spotify 打开");
         _dockOpenSpotify.Click += async (_, _) => await OpenSpotifyAsync(ActiveSpotifyUrl());
 
-        var miniTitleRow = new Grid
-        {
-            ColumnDefinitions = new ColumnDefinitions("*,8,Auto"),
-            Children = { _miniTitle, _miniQueueBadge }
-        };
-        Grid.SetColumn(_miniQueueBadge, 2);
-
         var miniInfo = new StackPanel
         {
             Spacing = 2,
             VerticalAlignment = VerticalAlignment.Center,
-            Children = { miniTitleRow, _miniSubtitle }
+            Children = { _miniTitle, _miniSubtitle }
         };
         var transportControls = new StackPanel
         {
@@ -632,9 +614,9 @@ internal sealed class LibraryPage : UserControl
             IsHitTestVisible = false
         };
 
-        var dockSurface = new Border
+        _dockSurface = new Border
         {
-            Background = _dockBaseBrush,
+            Background = new SolidColorBrush(LyricsTheme.DockBackground.Color),
             BorderBrush = new SolidColorBrush(Color.FromArgb(0x24, 255, 255, 255)),
             BorderThickness = new Thickness(1),
             CornerRadius = new CornerRadius(LyricsTheme.CardRadius),
@@ -652,7 +634,7 @@ internal sealed class LibraryPage : UserControl
             VerticalAlignment = VerticalAlignment.Bottom,
             Margin = new Thickness(14, 0, 14, 14),
             IsVisible = false,
-            Children = { dockSurface }
+            Children = { _dockSurface }
         };
 
         // ── Page Root Layout ───────────────────────────────────────────────────
@@ -684,10 +666,13 @@ internal sealed class LibraryPage : UserControl
                 _lifetime = new();
             }
             _store.Changed += OnStoreChanged;
+            LyricsTheme.DockBackground.PropertyChanged += OnDockPaletteChanged;
+            SyncDockPalette(animate: false);
         };
         DetachedFromVisualTree += (_, _) =>
         {
             _store.Changed -= OnStoreChanged;
+            LyricsTheme.DockBackground.PropertyChanged -= OnDockPaletteChanged;
             _searchDebounce.Stop();
             _lifetime.Cancel();
             OnHidden();
@@ -813,6 +798,7 @@ internal sealed class LibraryPage : UserControl
         }
         BindLibrary();
         UpdatePlaybackState(_store.Snapshot, allowQueueAdvance: false);
+        SyncDockPalette(animate: false);
         UpdateLayoutMode();
     }
 
@@ -1794,6 +1780,69 @@ internal sealed class LibraryPage : UserControl
         _ => "音乐库"
     };
 
+    private string? ActiveContextUri(LibraryTrackPane pane)
+    {
+        if (!pane.IsUnfilteredDefaultOrder)
+            return null;
+        return _activeTab switch
+        {
+            LibraryTab.Collections when _selectedCollection.Id is { } pid => $"spotify:playlist:{pid}",
+            LibraryTab.Albums when _selectedAlbum is { Id: var aid } => $"spotify:album:{aid}",
+            LibraryTab.Search when _inSearchDetail && _searchDetailPlaylistId is { } pid => $"spotify:playlist:{pid}",
+            LibraryTab.Search when _inSearchDetail && _searchDetailAlbumId is { } aid => $"spotify:album:{aid}",
+            _ => null
+        };
+    }
+
+    internal static LibraryPlayRequest? BuildPlayRequest(
+        string? contextUri,
+        IReadOnlyList<LibraryTrack> visibleTracks,
+        LibraryTrack? startTrack,
+        bool? shuffle)
+    {
+        var playable = visibleTracks.Where(t => t.CanPlay && !string.IsNullOrEmpty(t.Uri)).ToList();
+        if (!string.IsNullOrWhiteSpace(contextUri))
+        {
+            var chosen = startTrack is { CanPlay: true }
+                ? startTrack
+                : shuffle == true && playable.Count > 0
+                    ? playable[Random.Shared.Next(playable.Count)]
+                    : null;
+            return new LibraryPlayRequest(contextUri, chosen?.Uri, null, shuffle);
+        }
+
+        if (playable.Count == 0)
+            return startTrack is { CanPlay: true }
+                ? new LibraryPlayRequest(null, startTrack.Uri, [startTrack.Uri], shuffle)
+                : null;
+
+        var uris = playable.Select(t => t.Uri).Distinct(StringComparer.Ordinal).ToList();
+        if (shuffle == true && startTrack is null)
+        {
+            for (var i = uris.Count - 1; i > 0; i--)
+            {
+                var j = Random.Shared.Next(i + 1);
+                (uris[i], uris[j]) = (uris[j], uris[i]);
+            }
+        }
+
+        var startUri = startTrack is { CanPlay: true } ? startTrack.Uri : uris[0];
+        var index = uris.FindIndex(u => u == startUri);
+        if (index < 0)
+        {
+            uris.Insert(0, startUri);
+            index = 0;
+        }
+
+        const int maxSpotifyUris = 100;
+        if (uris.Count > maxSpotifyUris)
+        {
+            var start = Math.Max(0, Math.Min(index, uris.Count - maxSpotifyUris));
+            uris = uris.Skip(start).Take(maxSpotifyUris).ToList();
+        }
+        return new LibraryPlayRequest(null, startUri, uris, shuffle);
+    }
+
     private async Task HandleTrackRowClickAsync(LibraryTrack track)
     {
         if (!track.CanPlay) return;
@@ -1802,7 +1851,47 @@ internal sealed class LibraryPage : UserControl
             await HandlePlayPauseAsync();
             return;
         }
-        await PlaySingleTrackAsync(track);
+        var pane = ActiveTrackPane();
+        await PlayFromListAsync(pane.VisibleTracks, track, shuffle: null, ActiveContextUri(pane));
+    }
+
+    private async Task PlayFromListAsync(
+        IReadOnlyList<LibraryTrack> visibleTracks,
+        LibraryTrack? startTrack,
+        bool? shuffle,
+        string? contextUri)
+    {
+        if (_library is not { } library) return;
+        var request = BuildPlayRequest(contextUri, visibleTracks, startTrack, shuffle);
+        if (request is null)
+        {
+            _showToast("当前列表中没有可播放的曲目");
+            return;
+        }
+
+        var token = _session.Token;
+        try
+        {
+            var result = await library.PlayContextAsync(request, token);
+            if (token.IsCancellationRequested || library != _getLibrary()) return;
+            if (result.ManagedByServer)
+            {
+                _queue.Stop();
+                return;
+            }
+            if (!string.IsNullOrEmpty(result.Error))
+            {
+                _showToast(result.Error);
+                return;
+            }
+            _queue.Start(ActiveListTitle(), visibleTracks, startTrack, shuffle == true);
+        }
+        catch (OperationCanceledException) { }
+        catch (InvalidOperationException ex)
+        {
+            if (!token.IsCancellationRequested)
+                _showToast(ex.Message);
+        }
     }
 
     private async Task PlaySingleTrackAsync(LibraryTrack track, bool backgroundQueue = false)
@@ -1826,13 +1915,8 @@ internal sealed class LibraryPage : UserControl
 
     private async void PlayQueue(string sourceTitle, IReadOnlyList<LibraryTrack> tracks, LibraryTrack? startTrack, bool shuffle)
     {
-        var first = _queue.Start(sourceTitle, tracks, startTrack, shuffle);
-        if (first is null)
-        {
-            _showToast("当前列表中没有可播放的曲目");
-            return;
-        }
-        await PlayQueuedTrackAsync(first);
+        var pane = ActiveTrackPane();
+        await PlayFromListAsync(tracks, startTrack, shuffle, ActiveContextUri(pane));
     }
 
     private async Task PlayQueuedTrackAsync(LibraryTrack track)
@@ -2060,13 +2144,10 @@ internal sealed class LibraryPage : UserControl
 
         _miniPlayIcon.Data = StreamGeometry.Parse(snapshot.IsPlaying ? LibraryIcons.Pause : LibraryIcons.Play);
         _miniPlayIcon.Margin = new Thickness(snapshot.IsPlaying ? 0 : 1.5, 0, 0, 0);
-        _miniQueueBadge.IsVisible = _queue.IsActive;
         _miniShuffle.IsVisible = _queue.IsActive;
         _miniStopQueue.IsVisible = _queue.IsActive;
         if (_queue.IsActive)
         {
-            var mode = _queue.IsShuffled ? "随机" : "连播";
-            _miniQueueText.Text = $"{mode} {_queue.Position}/{_queue.Count}";
             _miniShuffle.Opacity = _queue.IsShuffled ? 1 : 0.6;
             _miniPrev.IsEnabled = _queue.CanPrevious;
             _miniNext.IsEnabled = _queue.CanNext;
@@ -2083,13 +2164,45 @@ internal sealed class LibraryPage : UserControl
         var compactDock = Bounds.Width > 0 && Bounds.Width < 740;
         _dockShuffle.IsVisible = !compactDock;
         _dockOpenSpotify.IsVisible = spotifyUrl is not null && !compactDock;
-        SyncDockPalette();
+        SyncDockPalette(animate: true);
     }
 
-    private void SyncDockPalette()
+    private void OnDockPaletteChanged(object? sender, AvaloniaPropertyChangedEventArgs e)
     {
-        var baseColor = LyricsTheme.DropDownBackground.Color;
-        _dockBaseBrush.Color = Color.FromArgb(0xE4, baseColor.R, baseColor.G, baseColor.B);
+        if (e.Property == SolidColorBrush.ColorProperty)
+            SyncDockPalette(animate: true);
+    }
+
+    private void SyncDockPalette(bool animate)
+    {
+        var nextColor = LyricsTheme.DockBackground.Color;
+        if (_dockColor == nextColor)
+            return;
+        _dockColor = nextColor;
+
+        if (!animate)
+        {
+            _dockSurface.Transitions = null;
+            _dockSurface.Background = new SolidColorBrush(nextColor);
+            Dispatcher.UIThread.Post(EnsureDockBackgroundTransition, DispatcherPriority.Render);
+            return;
+        }
+
+        EnsureDockBackgroundTransition();
+        _dockSurface.Background = new SolidColorBrush(nextColor);
+    }
+
+    private void EnsureDockBackgroundTransition()
+    {
+        _dockSurface.Transitions ??=
+        [
+            new BrushTransition
+            {
+                Property = Border.BackgroundProperty,
+                Duration = TimeSpan.FromMilliseconds(850),
+                Easing = new CubicEaseInOut()
+            }
+        ];
     }
 
     private bool IsCurrentTrack(string uri) =>
@@ -2309,6 +2422,65 @@ internal sealed class LibraryPage : UserControl
         };
     }
 
+    private static ContextMenu CreateThemedContextMenu()
+    {
+        var menu = new ContextMenu
+        {
+            Padding = new Thickness(5),
+            Background = LyricsTheme.DropDownBackground,
+            Foreground = LyricsTheme.PrimaryText,
+            BorderBrush = LyricsTheme.CardBorder,
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(14),
+            FontFamily = new FontFamily("Noto Sans CJK SC"),
+            FontSize = 13,
+            WindowManagerAddShadowHint = true
+        };
+        menu.Resources["MenuFlyoutPresenterBackground"] = LyricsTheme.DropDownBackground;
+        menu.Resources["MenuFlyoutPresenterBorderBrush"] = LyricsTheme.CardBorder;
+        menu.Resources["MenuFlyoutPresenterBorderThemeThickness"] = new Thickness(1);
+        menu.Resources["MenuFlyoutPresenterThemePadding"] = new Thickness(5);
+        menu.Resources["MenuFlyoutThemeMinHeight"] = 32d;
+        menu.Resources["MenuFlyoutItemThemePadding"] = new Thickness(10, 5);
+        menu.Resources["MenuFlyoutItemForeground"] = LyricsTheme.PrimaryText;
+        menu.Resources["MenuFlyoutItemForegroundPointerOver"] = LyricsTheme.PrimaryText;
+        menu.Resources["MenuFlyoutItemForegroundPressed"] = LyricsTheme.PrimaryText;
+        menu.Resources["MenuFlyoutItemForegroundDisabled"] = LyricsTheme.MutedText;
+        return menu;
+    }
+
+    private static MenuItem CreateThemedMenuItem(Control header, Action onClick)
+    {
+        var highlight = new SolidColorBrush(Color.FromArgb(0x22, 255, 255, 255))
+        {
+            Opacity = 0,
+            Transitions = new Transitions
+            {
+                new DoubleTransition
+                {
+                    Property = Brush.OpacityProperty,
+                    Duration = TimeSpan.FromMilliseconds(140),
+                    Easing = new CubicEaseOut()
+                }
+            }
+        };
+        var item = new MenuItem
+        {
+            Header = header,
+            MinHeight = 32,
+            Padding = new Thickness(10, 5),
+            Background = highlight,
+            CornerRadius = new CornerRadius(8)
+        };
+        item.Resources["MenuFlyoutItemBackground"] = highlight;
+        item.Resources["MenuFlyoutItemBackgroundPointerOver"] = highlight;
+        item.Resources["MenuFlyoutItemBackgroundPressed"] = highlight;
+        item.PointerEntered += (_, _) => highlight.Opacity = item.IsEnabled ? 1 : 0;
+        item.PointerExited += (_, _) => highlight.Opacity = 0;
+        item.Click += (_, _) => onClick();
+        return item;
+    }
+
     // ── Nested Reusable Track Pane & Track Row ─────────────────────────────────
     private sealed class LibraryTrackPane : Grid
     {
@@ -2358,6 +2530,7 @@ internal sealed class LibraryPage : UserControl
         public IReadOnlyList<LibraryTrack> VisibleTracks => _visibleTracks.ToList();
         public bool IsBackVisible => _backButton.IsVisible;
         public bool ShouldLoadMore => NextOffset.HasValue && !IsFailed && !IsLoading && NearEnd(_list);
+        public bool IsUnfilteredDefaultOrder => string.IsNullOrWhiteSpace(_filterBox.Text) && _sortMode == LibrarySortMode.Default;
 
         public LibraryTrackPane(
             LibraryArtwork artwork,
@@ -2714,28 +2887,7 @@ internal sealed class LibraryPage : UserControl
 
         private ContextMenu BuildContextMenu(LibraryTrack track)
         {
-            var menu = new ContextMenu
-            {
-                Padding = new Thickness(5),
-                Background = LyricsTheme.DropDownBackground,
-                Foreground = LyricsTheme.PrimaryText,
-                BorderBrush = LyricsTheme.CardBorder,
-                BorderThickness = new Thickness(1),
-                CornerRadius = new CornerRadius(14),
-                FontFamily = new FontFamily("Noto Sans CJK SC"),
-                FontSize = 13,
-                WindowManagerAddShadowHint = true
-            };
-            menu.Resources["MenuFlyoutPresenterBackground"] = LyricsTheme.DropDownBackground;
-            menu.Resources["MenuFlyoutPresenterBorderBrush"] = LyricsTheme.CardBorder;
-            menu.Resources["MenuFlyoutPresenterBorderThemeThickness"] = new Thickness(1);
-            menu.Resources["MenuFlyoutPresenterThemePadding"] = new Thickness(5);
-            menu.Resources["MenuFlyoutThemeMinHeight"] = 32d;
-            menu.Resources["MenuFlyoutItemThemePadding"] = new Thickness(10, 5);
-            menu.Resources["MenuFlyoutItemForeground"] = LyricsTheme.PrimaryText;
-            menu.Resources["MenuFlyoutItemForegroundPointerOver"] = LyricsTheme.PrimaryText;
-            menu.Resources["MenuFlyoutItemForegroundPressed"] = LyricsTheme.PrimaryText;
-            menu.Resources["MenuFlyoutItemForegroundDisabled"] = LyricsTheme.MutedText;
+            var menu = CreateThemedContextMenu();
 
             if (track.CanPlay)
             {
@@ -2796,19 +2948,6 @@ internal sealed class LibraryPage : UserControl
 
         private static MenuItem CreateMenuItem(string label, string iconPath, Action onClick, bool accentIcon = false)
         {
-            var highlight = new SolidColorBrush(Color.FromArgb(0x22, 255, 255, 255))
-            {
-                Opacity = 0,
-                Transitions = new Transitions
-                {
-                    new DoubleTransition
-                    {
-                        Property = Brush.OpacityProperty,
-                        Duration = TimeSpan.FromMilliseconds(140),
-                        Easing = new CubicEaseOut()
-                    }
-                }
-            };
             var icon = LibraryIcons.Icon(iconPath, 14, accentIcon ? LyricsTheme.Accent : LyricsTheme.MutedText);
             var text = new TextBlock
             {
@@ -2824,22 +2963,7 @@ internal sealed class LibraryPage : UserControl
                 Children = { icon, text }
             };
             SetColumn(text, 2);
-
-            var item = new MenuItem
-            {
-                Header = content,
-                MinHeight = 32,
-                Padding = new Thickness(10, 5),
-                Background = highlight,
-                CornerRadius = new CornerRadius(8)
-            };
-            item.Resources["MenuFlyoutItemBackground"] = highlight;
-            item.Resources["MenuFlyoutItemBackgroundPointerOver"] = highlight;
-            item.Resources["MenuFlyoutItemBackgroundPressed"] = highlight;
-            item.PointerEntered += (_, _) => highlight.Opacity = item.IsEnabled ? 1 : 0;
-            item.PointerExited += (_, _) => highlight.Opacity = 0;
-            item.Click += (_, _) => onClick();
-            return item;
+            return CreateThemedMenuItem(content, onClick);
         }
 
         private static StackPanel ButtonLabel(string iconPath, string text, IBrush foreground) => new()

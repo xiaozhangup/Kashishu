@@ -144,10 +144,60 @@ internal sealed class SettingsPage : PanelPage
             Children = { status, saveKey }
         };
         Grid.SetColumn(saveKey, 2);
+        Choice<SoloistAudioQuality>[] soloistQualityChoices =
+        [
+            new(SoloistAudioQuality.Automatic, "自动（默认）"),
+            new(SoloistAudioQuality.Low, "低（24 kbps）"),
+            new(SoloistAudioQuality.Normal, "标准（96 kbps）"),
+            new(SoloistAudioQuality.High, "高（160 kbps）"),
+            new(SoloistAudioQuality.VeryHigh, "极高（320 kbps）"),
+            new(SoloistAudioQuality.Lossless, "无损（FLAC）")
+        ];
+        var soloistQuality = Ui.Combo("Soloist 音频音质", 200);
+        soloistQuality.ItemsSource = soloistQualityChoices;
+        soloistQuality.SelectedItem = soloistQualityChoices.FirstOrDefault(choice => choice.Value == settings.SoloistQuality)
+            ?? soloistQualityChoices[0];
+        var revertingQuality = false;
+        soloistQuality.SelectionChanged += (_, _) =>
+        {
+            if (revertingQuality || soloistQuality.SelectedItem is not Choice<SoloistAudioQuality> choice
+                || choice.Value == settings.SoloistQuality)
+                return;
+            var previous = settings.SoloistQuality;
+            if (Commit(settings with { SoloistQuality = choice.Value }, restartPlayback: true))
+            {
+                showToast($"已切换为{choice.Label}，正在重启 Soloist…");
+                return;
+            }
+            revertingQuality = true;
+            soloistQuality.SelectedItem = soloistQualityChoices.First(c => c.Value == previous);
+            revertingQuality = false;
+            showToast("音质设置保存失败，请查看终端错误");
+        };
+        var qualityRow = new Grid
+        {
+            ColumnDefinitions = new ColumnDefinitions("*,16,Auto"),
+            Margin = new Thickness(0, 6, 0, 0),
+            Children =
+            {
+                new StackPanel
+                {
+                    Spacing = 2,
+                    VerticalAlignment = VerticalAlignment.Center,
+                    Children =
+                    {
+                        Ui.Text("流媒体音质", 14, FontWeight.SemiBold),
+                        Ui.Text("修改后将重启 Soloist 生效，无损档位需 Spotify 账号与曲目支持。", 12, muted: true)
+                    }
+                },
+                soloistQuality
+            }
+        };
+        Grid.SetColumn(soloistQuality, 2);
         var soloistForm = Ui.Block(new StackPanel
         {
             Spacing = 8,
-            Children = { Ui.Text("API Key", 14, FontWeight.SemiBold), soloistKey, keyActions }
+            Children = { Ui.Text("API Key", 14, FontWeight.SemiBold), soloistKey, keyActions, qualityRow }
         });
         var statusTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
         statusTimer.Tick += (_, _) => status.Text = soloistStatus?.Invoke();

@@ -25,28 +25,32 @@ internal sealed class SoloistProcess : IAsyncDisposable
 
     public bool HasExited => _child.HasExited;
 
-    public static SoloistProcess Start(string executable, string apiKey)
+    public static SoloistProcess Start(
+        string executable,
+        string apiKey,
+        SoloistAudioQuality quality = SoloistAudioQuality.Automatic)
     {
         var data = UserDirectory("XDG_STATE_HOME", ".local/state");
         var cache = UserDirectory("XDG_CACHE_HOME", ".cache");
-        var start = new ProcessStartInfo(executable)
-        {
-            UseShellExecute = false,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            CreateNoWindow = true
-        };
-        foreach (var argument in new[]
-        {
-            "--device-name", DeviceName, "--api-key", apiKey,
-            "--data-dir", data, "--cache-dir", cache, "--ws", "127.0.0.1:0"
-        })
-            start.ArgumentList.Add(argument);
-
         var directoryLock = new FileStream(Path.Combine(data, "kashishu.lock"),
             FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
         try
         {
+            ApplyAudioQualityPrefs(data, quality);
+            var start = new ProcessStartInfo(executable)
+            {
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                CreateNoWindow = true
+            };
+            foreach (var argument in new[]
+            {
+                "--device-name", DeviceName, "--api-key", apiKey,
+                "--data-dir", data, "--cache-dir", cache, "--ws", "127.0.0.1:0"
+            })
+                start.ArgumentList.Add(argument);
+
             File.Delete(Path.Combine(data, "ws.addr"));
             File.Delete(Path.Combine(data, "ws.port"));
             var child = Process.Start(start) ?? throw new InvalidOperationException("Soloist 无法启动");
@@ -148,6 +152,70 @@ internal sealed class SoloistProcess : IAsyncDisposable
             File.SetUnixFileMode(directory, PrivateDirectory);
         }
         return directory;
+    }
+
+    internal static void ApplyAudioQualityPrefs(string dataDirectory, SoloistAudioQuality quality)
+    {
+        var settingsDir = Path.Combine(dataDirectory, "settings");
+        if (!Directory.Exists(settingsDir))
+            return;
+
+        var targets = new List<string>();
+        var rootPrefs = Path.Combine(settingsDir, "prefs");
+        if (File.Exists(rootPrefs))
+            targets.Add(rootPrefs);
+
+        var usersDir = Path.Combine(settingsDir, "Users");
+        if (Directory.Exists(usersDir))
+        {
+            foreach (var userDir in Directory.EnumerateDirectories(usersDir))
+            {
+                var userPrefs = Path.Combine(userDir, "prefs");
+                if (File.Exists(userPrefs) || quality != SoloistAudioQuality.Automatic)
+                    targets.Add(userPrefs);
+            }
+        }
+
+        foreach (var path in targets)
+        {
+            var existing = File.Exists(path) ? File.ReadAllText(path) : string.Empty;
+            var updated = UpdatePrefsContent(existing, quality);
+            if (File.Exists(path) && string.Equals(existing, updated, StringComparison.Ordinal))
+                continue;
+
+            var temporary = Path.Combine(Path.GetDirectoryName(path)!, $".prefs.{Guid.NewGuid():N}.tmp");
+            try
+            {
+                File.WriteAllText(temporary, updated);
+                File.Move(temporary, path, overwrite: true);
+            }
+            finally
+            {
+                if (File.Exists(temporary))
+                    File.Delete(temporary);
+            }
+        }
+    }
+
+    internal static string UpdatePrefsContent(string content, SoloistAudioQuality quality)
+    {
+        var lines = content.Replace("\r\n", "\n", StringComparison.Ordinal)
+            .Split('\n', StringSplitOptions.RemoveEmptyEntries)
+            .Where(line => !line.StartsWith("audio.play_bitrate_enumeration=", StringComparison.Ordinal)
+                && !line.StartsWith("audio.play_bitrate_non_metered_enumeration=", StringComparison.Ordinal)
+                && !line.StartsWith("audio.sync_bitrate_enumeration=", StringComparison.Ordinal)
+                && !line.StartsWith("audio.play_bitrate_non_metered_migrated=", StringComparison.Ordinal))
+            .ToList();
+
+        if (quality != SoloistAudioQuality.Automatic)
+        {
+            var value = (int)quality;
+            lines.Add($"audio.play_bitrate_enumeration={value}");
+            lines.Add($"audio.play_bitrate_non_metered_enumeration={value}");
+            lines.Add("audio.play_bitrate_non_metered_migrated=true");
+        }
+
+        return lines.Count == 0 ? string.Empty : string.Join('\n', lines) + "\n";
     }
 
     [DllImport("libc", EntryPoint = "kill")]
