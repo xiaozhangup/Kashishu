@@ -10,7 +10,7 @@ using Avalonia.Threading;
 
 namespace Kashishu;
 
-internal enum PanelKind { Settings, Headphones, Banner }
+internal enum PanelKind { Settings, Headphones, Banner, Library }
 
 /// <summary>A page shown inside the lyrics window's panel.</summary>
 internal abstract class PanelPage : UserControl
@@ -132,7 +132,9 @@ internal sealed class PanelHost : Grid
             Open(kind);
     }
 
-    public void Open(PanelKind kind)
+    public void Open(PanelKind kind) => Open(kind, null);
+
+    public void Open(PanelKind kind, int? slideFromDirection)
     {
         var wasOpen = _open;
         var previous = wasOpen ? _current : null;
@@ -141,7 +143,7 @@ internal sealed class PanelHost : Grid
         IsVisible = true;
         if (!wasOpen)
         {
-            Motion.In(_content, 0, 26);
+            Motion.In(_content, slideFromDirection is { } slide ? 30 * slide : 0, slideFromDirection.HasValue ? 0 : 26);
             Focus();
         }
 
@@ -158,7 +160,7 @@ internal sealed class PanelHost : Grid
         page.OnShown();
         if (previous != kind)
         {
-            Motion.In(page, 30 * direction, direction == 0 ? 10 : 0);
+            Motion.In(page, 30 * direction, direction == 0 ? (slideFromDirection.HasValue ? 0 : 10) : 0);
             Motion.Stagger(page.EntranceTargets);
         }
 
@@ -166,12 +168,14 @@ internal sealed class PanelHost : Grid
         Changed?.Invoke(kind);
     }
 
-    public void Close()
+    public void Close() => Close(null);
+
+    public void Close(int? slideToDirection)
     {
         if (!_open)
             return;
         _open = false;
-        Motion.Out(_content, 0, 20);
+        Motion.Out(_content, slideToDirection is { } slide ? 30 * slide : 0, slideToDirection.HasValue ? 0 : 20);
         Changed?.Invoke(null);
         DispatcherTimer.RunOnce(() =>
         {

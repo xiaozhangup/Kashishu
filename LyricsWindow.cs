@@ -19,6 +19,8 @@ internal sealed class LyricsWindow : Window
 {
     private readonly LyricsWindowControl _lyrics;
     private readonly PanelHost _panel;
+    private readonly LibraryHost? _library;
+    private bool _libraryAvailable;
     private readonly TextBlock _toastText = new()
     {
         FontSize = 13,
@@ -34,7 +36,7 @@ internal sealed class LyricsWindow : Window
     public LyricsWindow(PlaybackStore store, IslandSettings settings, WindowIcon? icon,
         Func<PlaybackCommand, CancellationToken, Task<string?>> controlPlayback,
         Func<Action<string>, PanelPage> createSettings, Func<PanelPage> createBanner, Func<bool, bool> setTranslation, Func<bool, bool> setIslandVisibility,
-        HeadphoneService headphones)
+        HeadphoneService headphones, Func<Action<string>, Action, LibraryPage>? createLibrary = null)
     {
         Title = "歌词 · Kashishu";
         Icon = icon;
@@ -82,15 +84,28 @@ internal sealed class LyricsWindow : Window
         UpdatePalette();
         store.Changed += OnPlaybackChanged;
         _panel = new PanelHost(() => createSettings(ShowToast), () => new HeadphonePage(headphones), createBanner);
+        if (createLibrary is not null)
+            _library = new LibraryHost(close => createLibrary(ShowToast, close), CloseLibrary);
+        _libraryAvailable = settings.PlaybackSource == PlaybackSourcePreference.Soloist;
         _panel.Changed += kind =>
         {
+            if (_library?.IsOpen == true)
+                return;
             _lyrics.SetPanel(kind);
             if (kind is null)
                 _lyrics.Focus();
         };
         AddHandler(KeyDownEvent, (_, args) =>
         {
-            if (args.Key == Key.Escape && _panel.IsOpen)
+            if (args.Key != Key.Escape)
+                return;
+            if (_library?.IsOpen == true)
+            {
+                if (!_library.BackToCollections())
+                    CloseLibrary();
+                args.Handled = true;
+            }
+            else if (_panel.IsOpen)
             {
                 _panel.Close();
                 args.Handled = true;
@@ -110,8 +125,9 @@ internal sealed class LyricsWindow : Window
                     else { _beforeFullScreen = WindowState; WindowState = WindowState.FullScreen; }
                     break;
                 case LyricsWindowAction.Pin when !OperatingSystem.IsLinux(): Topmost = !Topmost; break;
-                case LyricsWindowAction.Settings: _panel.Toggle(PanelKind.Settings); break;
-                case LyricsWindowAction.Headphones: _panel.Toggle(PanelKind.Headphones); break;
+                case LyricsWindowAction.Library: ToggleLibrary(); break;
+                case LyricsWindowAction.Settings: TogglePanel(PanelKind.Settings); break;
+                case LyricsWindowAction.Headphones: TogglePanel(PanelKind.Headphones); break;
             }
             UpdateWindowState();
         };
@@ -125,7 +141,11 @@ internal sealed class LyricsWindow : Window
             if (WindowState == WindowState.Normal) BeginResizeDrag(edge, args);
         };
         // The panel sits inside the resize ring and below the drawn header, so those keep working.
-        Content = new Grid { Children = { _lyrics, _panel, _toast } };
+        var content = new Grid { Children = { _lyrics, _panel } };
+        if (_library is not null)
+            content.Children.Add(_library);
+        content.Children.Add(_toast);
+        Content = content;
         Opened += (_, _) =>
         {
             if (Screens.ScreenFromWindow(this) is { } screen)
@@ -174,9 +194,51 @@ internal sealed class LyricsWindow : Window
         _lyrics.InvalidateVisual();
     }
 
-    public void ApplySettings(IslandSettings settings) => _lyrics.ApplySettings(settings);
+    public void ApplySettings(IslandSettings settings)
+    {
+        _lyrics.ApplySettings(settings);
+        _libraryAvailable = settings.PlaybackSource == PlaybackSourcePreference.Soloist;
+        if (!_libraryAvailable && _library?.IsOpen == true)
+            CloseLibrary();
+    }
 
-    public void OpenPanel(PanelKind kind) => _panel.Open(kind);
+    public void OpenPanel(PanelKind kind)
+    {
+        var fromLibrary = _library?.IsOpen == true;
+        _library?.Close(fromLibrary ? -1 : null);
+        _panel.Open(kind, fromLibrary ? 1 : null);
+    }
+
+    private void TogglePanel(PanelKind kind)
+    {
+        if (_library?.IsOpen == true)
+            OpenPanel(kind);
+        else
+            _panel.Toggle(kind);
+    }
+
+    private void ToggleLibrary()
+    {
+        if (!_libraryAvailable || _library is null)
+            return;
+        if (_library.IsOpen)
+        {
+            CloseLibrary();
+            return;
+        }
+
+        var fromPanel = _panel.IsOpen;
+        _library.Open(fromPanel ? -1 : null);
+        _panel.Close(fromPanel ? 1 : null);
+        _lyrics.SetPanel(PanelKind.Library);
+    }
+
+    private void CloseLibrary()
+    {
+        _library!.Close();
+        _lyrics.SetPanel(_panel.Current);
+        _lyrics.Focus();
+    }
 }
 
 internal sealed class LyricsWindowControl : Control, IDisposable
@@ -381,6 +443,7 @@ internal sealed class LyricsWindowControl : Control, IDisposable
         {
             VolumePreview = _volumePreview,
             ShowIsland = _settings.ShowIsland,
+            ShowLibrary = _settings.PlaybackSource == PlaybackSourcePreference.Soloist,
             PressedAction = _pressed?.Action,
             Headphones = _headphoneStatus,
             PanelProgress = PanelProgress(_clock.Elapsed.TotalSeconds),

@@ -29,7 +29,7 @@ internal static class SongBanner
 
     internal static string? SpotifyUrl(string id, PlaybackSourcePreference source)
     {
-        if (source != PlaybackSourcePreference.Spotify)
+        if (source is not (PlaybackSourcePreference.Spotify or PlaybackSourcePreference.Soloist))
             return null;
         const string prefix = "spotify:track:";
         if (id.StartsWith(prefix, StringComparison.Ordinal))

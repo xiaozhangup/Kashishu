@@ -120,6 +120,7 @@ public sealed class App : Application
     private IPlaybackSource? _playbackSource;
     private CancellationTokenSource? _playbackCancellation;
     private Task? _playbackTask;
+    private Task? _soloistTask;
     private IslandSettings _settings = new();
 
     public override void Initialize()
@@ -175,6 +176,8 @@ public sealed class App : Application
             desktop.Exit += (_, _) =>
             {
                 _shutdown.Cancel();
+                if (_soloistTask is { IsCompleted: false } soloist)
+                    Task.WhenAny(soloist, Task.Delay(TimeSpan.FromSeconds(4))).GetAwaiter().GetResult();
                 _aiLyricsTranslation.Dispose();
                 _headphones.Dispose();
                 _accessibility?.Stop();
@@ -359,10 +362,12 @@ public sealed class App : Application
         else
         {
             _lyricsWindow = new LyricsWindow(_store!, _settings, _appIcon, ControlPlaybackAsync,
-                showToast => new SettingsPage(_settings, ApplySettings, () => _settings, RefreshCurrentTrack, _aiLyricsTranslation!, showToast),
+                showToast => new SettingsPage(_settings, ApplySettings, () => _settings, RefreshCurrentTrack,
+                    _aiLyricsTranslation!, showToast, () => CurrentSoloist()?.Status ?? SoloistService.Starting),
                 () => new BannerPage(_store!, () => _settings),
                 value => ApplySettings(_settings with { ShowTranslation = value }, false),
-                value => ApplySettings(_settings with { ShowIsland = value }, false), _headphones!);
+                value => ApplySettings(_settings with { ShowIsland = value }, false), _headphones!,
+                (showToast, closeLibrary) => new LibraryPage(_store!, CurrentSoloist, ShowSettings, ControlPlaybackAsync, showToast, closeLibrary));
             _accessibility?.Track(_lyricsWindow);
             _lyricsWindow.Closed += (_, _) => _lyricsWindow = null;
             _lyricsWindow.Show();
@@ -404,6 +409,9 @@ public sealed class App : Application
     private void ShowSettings() => OpenLyricsWindow(PanelKind.Settings);
 
     private void ShowBanner() => OpenLyricsWindow(PanelKind.Banner);
+
+    private SoloistService? CurrentSoloist() => _settings.PlaybackSource == PlaybackSourcePreference.Soloist
+        ? Volatile.Read(ref _playbackSource) as SoloistService : null;
 
     private bool ApplySettings(IslandSettings settings, bool restartPlayback)
     {
@@ -452,6 +460,7 @@ public sealed class App : Application
         await _playbackRestart.WaitAsync();
         try
         {
+            var previousSoloist = Volatile.Read(ref _playbackSource) as SoloistService;
             _playbackCancellation?.Cancel();
             if (_playbackTask is not null)
             {
@@ -463,6 +472,11 @@ public sealed class App : Application
                 {
                 }
             }
+            if (previousSoloist is not null)
+            {
+                _soloistTask = null;
+                await previousSoloist.WaitForLibraryAsync();
+            }
             _playbackCancellation?.Dispose();
             _playbackCancellation = null;
             _playbackTask = null;
@@ -470,6 +484,12 @@ public sealed class App : Application
 
             if (_shutdown.IsCancellationRequested)
                 return;
+
+            if (_settings.PlaybackSource == PlaybackSourcePreference.Soloist)
+            {
+                StartSoloistSource();
+                return;
+            }
 
             if (_settings.PlaybackSource == PlaybackSourcePreference.Mpris)
             {
@@ -508,6 +528,16 @@ public sealed class App : Application
         var cancellationToken = _playbackCancellation.Token;
         Volatile.Write(ref _playbackSource, source);
         _playbackTask = Task.Run(() => source.RunAsync(cancellationToken));
+    }
+
+    private void StartSoloistSource()
+    {
+        _playbackCancellation = CancellationTokenSource.CreateLinkedTokenSource(_shutdown.Token);
+        var token = _playbackCancellation.Token;
+        var soloist = new SoloistService(_store!, _settings, token);
+        Volatile.Write(ref _playbackSource, soloist);
+        _store!.Update(new PlaybackSnapshot(null, 0, Stopwatch.GetTimestamp(), false, SoloistService.Starting));
+        _playbackTask = _soloistTask = Task.Run(() => soloist.RunAsync(token));
     }
 
     private static async Task ExitLaterAsync(
@@ -849,6 +879,7 @@ internal static class SelfCheck
         CheckSettingsStore();
         CheckTrackCache(track);
         CheckHeadphones();
+        CheckLibrary(track);
         Require(OverlayWindow.CalculateLogicalHeight(150d) == 174d, "island height scaling");
         Require(Math.Abs(OverlayWindow.CalculateLogicalWidth(1_920, 1.25d, 70d) - 1_075.2d) < 0.001d,
             "screen width scaling");
@@ -1302,6 +1333,160 @@ internal static class SelfCheck
             if (Directory.Exists(cacheHome))
                 Directory.Delete(cacheHome, recursive: true);
         }
+    }
+
+    private static void CheckLibrary(TrackInfo demoTrack)
+    {
+        using var playlistNullJson = JsonDocument.Parse("""
+        {
+          "id": "pl_null",
+          "name": "Mosaic Playlist",
+          "collaborative": false,
+          "description": "<b>Chill</b> &amp; Focus",
+          "owner": {"display_name": "User"},
+          "images": [{"url": "https://mosaic.scdn.co/640/test", "width": null, "height": null}],
+          "items": {"total": null}
+        }
+        """);
+        var parsedPlaylist = SpotifyService.ParsePlaylistObject(playlistNullJson.RootElement, "pl_null", "Mosaic Playlist");
+        Require(parsedPlaylist.ImageUrl == "https://mosaic.scdn.co/640/test"
+                && parsedPlaylist.TrackCount is null
+                && parsedPlaylist.Description == "Chill & Focus",
+            "library playlist null number fields");
+
+        using var tracksJson = JsonDocument.Parse("""
+        {
+          "total": 2,
+          "next": "https://api.spotify.com/v1/me/tracks?offset=1&limit=1",
+          "items": [
+            {
+              "is_local": false,
+              "track": {
+                "type": "track",
+                "name": "Alpha Song",
+                "uri": "spotify:track:1111111111111111111111",
+                "duration_ms": 180000,
+                "artists": [{"name": "Artist B"}],
+                "album": {
+                  "id": "album1",
+                  "name": "First Album",
+                  "images": [{"url": "https://i.scdn.co/image/test1"}]
+                }
+              }
+            },
+            {
+              "is_local": true,
+              "track": {
+                "type": "track",
+                "name": "Local Song",
+                "uri": "spotify:local:a:b:c:10",
+                "duration_ms": 120000,
+                "artists": [{"name": "Local Artist"}]
+              }
+            }
+          ]
+        }
+        """);
+        var tracksPage = SpotifyService.ParseTracksPage(tracksJson.RootElement, 0);
+        Require(tracksPage.Items.Count == 2
+                && tracksPage.NextOffset == 1
+                && tracksPage.Total == 2
+                && tracksPage.Items[0].CanPlay
+                && tracksPage.Items[0].Album == "First Album"
+                && tracksPage.Items[0].AlbumId == "album1"
+                && !tracksPage.Items[1].CanPlay,
+            "library tracks parsing");
+
+        var now = DateTimeOffset.Parse("2026-11-25T10:00:00Z");
+        using var recentJson = JsonDocument.Parse("""
+        {
+          "items": [
+            {
+              "played_at": "2026-11-25T09:50:00Z",
+              "track": {
+                "type": "track",
+                "name": "Recent Track",
+                "uri": "spotify:track:2222222222222222222222",
+                "duration_ms": 200000,
+                "artists": [{"name": "Artist A"}],
+                "album": {"id": "album2", "name": "Second Album"}
+              }
+            }
+          ]
+        }
+        """);
+        var recentPage = SpotifyService.ParseRecentlyPlayedPage(recentJson.RootElement, now);
+        Require(recentPage.Items.Count == 1 && recentPage.Items[0].Subtitle == "10 分钟前",
+            "library recently played parsing");
+
+        using var albumTracksJson = JsonDocument.Parse("""
+        {
+          "total": 1,
+          "items": [
+            {
+              "name": "Album Cut",
+              "uri": "spotify:track:3333333333333333333333",
+              "duration_ms": 150000,
+              "artists": [{"name": "Artist C"}]
+            }
+          ]
+        }
+        """);
+        var albumTracks = SpotifyService.ParseAlbumTracksPage(
+            albumTracksJson.RootElement, 0, "album3", "Third Album", "https://i.scdn.co/image/test3");
+        Require(albumTracks.Items.Count == 1
+                && albumTracks.Items[0].CanPlay
+                && albumTracks.Items[0].Album == "Third Album"
+                && albumTracks.Items[0].ImageUrl == "https://i.scdn.co/image/test3",
+            "library album tracks parsing");
+
+        using var searchJson = JsonDocument.Parse("""
+        {
+          "tracks": {"items": [
+            {"type": "track", "name": "Search Track", "uri": "spotify:track:4444444444444444444444", "duration_ms": 190000, "artists": [{"name": "Artist D"}]}
+          ]},
+          "albums": {"items": [
+            {"id": "album4", "name": "Search Album", "total_tracks": 10, "release_date": "2024-05-01", "artists": [{"name": "Artist D"}]}
+          ]},
+          "playlists": {"items": [null, {"id": "pl1", "name": "Search Playlist", "owner": {"display_name": "Tester"}}]}
+        }
+        """);
+        var searchResult = SpotifyService.ParseSearchResult(searchJson.RootElement);
+        Require(searchResult.Tracks.Count == 1
+                && searchResult.Albums.Count == 1 && searchResult.Albums[0].ReleaseYear == "2024"
+                && searchResult.Playlists.Count == 1 && searchResult.Playlists[0].Owner == "Tester",
+            "library search parsing");
+
+        var t1 = tracksPage.Items[0];
+        var t2 = recentPage.Items[0];
+        var t3 = albumTracks.Items[0];
+        var filtered = LibraryTrackQuery.Apply([t1, t2, t3], "Second", LibrarySortMode.Default);
+        Require(filtered.Count == 1 && filtered[0].Uri == t2.Uri, "library filter by album");
+        var byDuration = LibraryTrackQuery.Apply([t1, t2, t3], null, LibrarySortMode.Duration);
+        Require(byDuration.Select(t => t.Uri).SequenceEqual([t3.Uri, t1.Uri, t2.Uri]), "library sort by duration");
+
+        var queue = new LibraryQueue();
+        var started = queue.Start("Test List", [t1, t2, tracksPage.Items[1], t3], t1, shuffle: false);
+        Require(queue.IsActive && queue.Count == 3 && started?.Uri == t1.Uri && queue.Position == 1,
+            "library queue start");
+        var playingTrack = demoTrack with { Id = "1111111111111111111111", DurationMs = t1.DurationMs };
+        Require(queue.ObserveSnapshot(new PlaybackSnapshot(playingTrack, 178_500, Stopwatch.GetTimestamp(), true, "playing")) is null,
+            "library queue stays on playing track");
+        var advanced = queue.ObserveSnapshot(new PlaybackSnapshot(playingTrack, 179_200, Stopwatch.GetTimestamp(), false, "idle"));
+        Require(advanced?.Uri == t2.Uri && queue.Position == 2,
+            "library queue auto-advance on completion");
+
+        using var surface = SKSurface.Create(new SKImageInfo(1120, 720, SKColorType.Rgba8888, SKAlphaType.Premul));
+        using var renderer = new LyricsWindowRenderer();
+        renderer.Draw(surface.Canvas, 1120, 720,
+            new LyricsWindowFrame(
+                new PlaybackSnapshot(demoTrack, 9_650, Stopwatch.GetTimestamp(), true, "test"),
+                9_650, 9_650, 10, true, false, false, false, false, null, null, new Point(-1, -1), false)
+            {
+                ShowLibrary = true,
+                PanelProgress = 1,
+                ActivePanel = PanelKind.Library
+            });
     }
 
     private static void Require(bool condition, string name)

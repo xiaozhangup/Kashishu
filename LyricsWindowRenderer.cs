@@ -8,7 +8,7 @@ internal enum LyricsWindowAction
 {
     None, Minimize, Maximize, Close, Pin, FullScreen, Translation, LyricsOnly, Settings,
     Previous, PlayPause, Next, Shuffle, Repeat, Seek, Volume, Lyric, Follow, Island, Favorite, Headphones,
-    HeadphoneNoiseOff, HeadphoneNoiseCancellation, HeadphoneTransparency
+    HeadphoneNoiseOff, HeadphoneNoiseCancellation, HeadphoneTransparency, Library
 }
 
 internal sealed record LyricsWindowHit(LyricsWindowAction Action, Rect Bounds, bool Enabled = true, int Line = -1);
@@ -26,6 +26,7 @@ internal sealed record LyricsWindowFrame(
     double? BrowseScroll, double? SeekPreview, Point Pointer, bool Busy)
 {
     public double? VolumePreview { get; init; }
+    public bool ShowLibrary { get; init; }
     public bool ShowIsland { get; init; } = true;
     public LyricsWindowAction? PressedAction { get; init; }
     public LyricsHeadphoneStatus? Headphones { get; init; }
@@ -473,7 +474,9 @@ internal sealed class LyricsWindowRenderer : IDisposable
         HeaderButton(LyricsWindowAction.LyricsOnly, "lyrics", "纯歌词", frame.LyricsOnly);
         HeaderButton(LyricsWindowAction.Translation, "translation", "翻译", frame.ShowTranslation);
         HeaderButton(LyricsWindowAction.Island, "island", frame.ShowIsland ? "隐藏歌词灵动岛" : "显示歌词灵动岛", frame.ShowIsland);
-        HeaderButton(LyricsWindowAction.Settings, "settings", "设置", frame.ActivePanel is not null);
+        if (frame.ShowLibrary)
+            HeaderButton(LyricsWindowAction.Library, "library", "库", frame.ActivePanel == PanelKind.Library);
+        HeaderButton(LyricsWindowAction.Settings, "settings", "设置", frame.ActivePanel is not (null or PanelKind.Library));
         var brandOpacity = 1d;
         if (frame.Headphones is { } headphones)
             brandOpacity = DrawHeadphoneButton(canvas, frame, headphones, x);
@@ -1413,6 +1416,11 @@ internal sealed class LyricsWindowRenderer : IDisposable
             case "translation":
                 paint.Style = SKPaintStyle.Fill;
                 canvas.DrawText("译", -10, 8, _fonts.Get("译", 20, false), paint); break;
+            case "library":
+                canvas.DrawRoundRect(new SKRect(-9, -8, -5, 8), 1, 1, paint);
+                canvas.DrawRoundRect(new SKRect(-2, -8, 2, 8), 1, 1, paint);
+                Path((4, -7), (7, -8), (11, 7), (8, 8), (4, -7));
+                break;
             case "settings":
                 canvas.DrawCircle(0, 0, 6, paint); canvas.DrawCircle(0, 0, 2, paint);
                 for (var i = 0; i < 8; i++) { var a = i * MathF.PI / 4; Line(MathF.Cos(a) * 7, MathF.Sin(a) * 7, MathF.Cos(a) * 9, MathF.Sin(a) * 9); }

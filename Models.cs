@@ -88,9 +88,10 @@ public sealed class PlaybackStore
     public const string MissingSpotifyCredentialsStatus = "请到设置内配置 Spotify 参数";
     public const string NoActiveSpotifyPlaybackStatus = "Spotify 当前没有播放";
     public const string NoActiveMprisPlaybackStatus = "MPRIS 当前没有播放";
+    public const string NoActiveSoloistPlaybackStatus = "Soloist 当前没有播放";
 
     internal static bool IsNoActivePlayback(string status) =>
-        status is NoActiveSpotifyPlaybackStatus or NoActiveMprisPlaybackStatus;
+        status is NoActiveSpotifyPlaybackStatus or NoActiveMprisPlaybackStatus or NoActiveSoloistPlaybackStatus;
 
     internal static bool RequiresAttention(string status) =>
         status == MissingSpotifyCredentialsStatus
@@ -99,7 +100,8 @@ public sealed class PlaybackStore
         || status.StartsWith("正在连接 MPRIS", StringComparison.Ordinal)
         || !IsNoActivePlayback(status)
             && (status.StartsWith("Spotify ", StringComparison.Ordinal)
-                || status.StartsWith("MPRIS ", StringComparison.Ordinal));
+                || status.StartsWith("MPRIS ", StringComparison.Ordinal)
+                || status.StartsWith("Soloist ", StringComparison.Ordinal));
 
     private readonly object _updateGate = new();
     private PlaybackSnapshot _snapshot = new(

@@ -4,7 +4,7 @@
 
 https://github.com/user-attachments/assets/bc65054e-03d4-4007-9032-1123cf56aa45
 
-Linux 桌面歌词岛。当前曲目和播放进度可来自 Spotify Web API 或本机 MPRIS；逐字歌词与翻译通过
+Linux 桌面歌词岛。当前曲目和播放进度可来自 Spotify Web API、Spotify Soloist 或本机 MPRIS；逐字歌词与翻译通过
 [Lyricify Lyrics Helper](https://github.com/WXRIW/Lyricify-Lyrics-Helper) 获取和解析。
 字体、逐字裁剪、双层微光、播放头 bloom 与换行动画都在 Skia 自绘层完成，正常桌面运行时由 GPU 渲染。
 
@@ -45,6 +45,7 @@ Spotify 模式首次授权时会打开浏览器，请登录并允许读取当前
 发布物 `dist/Kashishu` 是单个可执行文件，自带 .NET 运行时和原生库，启动不要求系统安装 .NET。
 
 Spotify 开发模式下，还需要在 Dashboard 中把登录所用 Spotify 账号加入应用用户列表。
+
 程序启动后常驻系统托盘；托盘菜单提供“打开歌词窗口”“收藏歌曲”“显示词岛”开关、
 “耳机控制”“降噪模式”“设置”和“退出”。Spotify 当前歌曲已收藏时，同一项切换为“取消收藏歌曲”；
 切换为非 Spotify 音源时隐藏收藏项。
@@ -67,6 +68,13 @@ Spotify 开发模式下，还需要在 Dashboard 中把登录所用 Spotify 账�
 预览窗口始终展示打开时的歌曲，不随播放器切歌。
 窗口打开后会重新加载封面，复制时会等待加载完成，并优先使用分辨率较高的版本。
 加载失败时会提示使用缓存封面。
+
+## Spotify Soloist
+
+1. 在 [Soloist API Key 页面](https://developer.spotify.com/dashboard/soloist) 生成自己的 API Key。生成密钥需要 Spotify Premium。
+2. 在「播放信息源」选择 Soloist，填写 API Key 并保存。Kashishu 会查找本机已有客户端，缺失或已过期时从 [Spotify 官方](https://developer.spotify.com/documentation/soloist/reference/downloads-and-updates) 下载。切换来源或退出时会停止客户端。
+3. 首次配对时，在同一局域网内的 Spotify 客户端设备列表中选择 `Kashishu Soloist`。重新启动后会自动恢复配对。
+4. 「库」复用 Spotify Web API 来源下保存的应用参数和浏览器授权。用同一账号完成配对和授权后，即可浏览收藏和可读取的歌单。滚动到列表底部附近会自动加载下一页，点击曲目即可播放。
 
 ## 歌词窗口
 
@@ -204,7 +212,7 @@ FreeClip、FreeArc 和眼镜不显示降噪选项；眼镜只显示左右镜腿�
 - 暂停行为：立即隐藏、3 秒后隐藏或保持显示；通过岛屿单击暂停时始终保留并收窄，连接和错误提示不会被隐藏。
 - 临时隐藏：可选 2、5、10 或 30 秒。
 - 登录后自动启动：写入当前用户的 XDG 自启动目录。
-- 播放信息源：可在 Spotify Web API 与本地 MPRIS 之间切换。
+- 播放信息源：可在 Spotify Web API、Spotify Soloist 和本地 MPRIS 之间切换。
 - Spotify Client ID 和 Client Secret：点击保存后重新连接，Secret 在界面中遮蔽显示。
 - 缓存：分别显示本地缓存和 AI 翻译缓存的占用。使用“清理缓存”清理原始歌词、封面和歌曲信息，使用“清理翻译缓存”清理已保存的 AI 译文。
 

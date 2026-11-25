@@ -27,7 +27,8 @@ public enum LyricsSourcePreference
 internal enum PlaybackSourcePreference
 {
     Spotify,
-    Mpris
+    Mpris,
+    Soloist
 }
 
 internal enum IslandIconAction
@@ -88,7 +89,9 @@ internal readonly record struct IslandSettings(
     string AiTranslationApiKey = "",
     string AiTranslationBaseUrl = SettingsStore.DefaultAiTranslationBaseUrl,
     string AiTranslationModel = SettingsStore.DefaultAiTranslationModel,
-    string AiTranslationLanguage = SettingsStore.DefaultAiTranslationLanguage)
+    string AiTranslationLanguage = SettingsStore.DefaultAiTranslationLanguage,
+    string SoloistExecutable = "",
+    string SoloistApiKey = "")
 {
     public bool HasSpotifyCredentials =>
         !string.IsNullOrWhiteSpace(SpotifyClientId)
@@ -216,7 +219,9 @@ internal static class SettingsStore
                 data?.AiTranslationApiKey ?? string.Empty,
                 data?.AiTranslationBaseUrl ?? DefaultAiTranslationBaseUrl,
                 data?.AiTranslationModel ?? DefaultAiTranslationModel,
-                data?.AiTranslationLanguage ?? DefaultAiTranslationLanguage));
+                data?.AiTranslationLanguage ?? DefaultAiTranslationLanguage,
+                data?.SoloistExecutable ?? string.Empty,
+                data?.SoloistApiKey ?? string.Empty));
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or JsonException)
         {
@@ -279,7 +284,9 @@ internal static class SettingsStore
                     AiTranslationApiKey = settings.AiTranslationApiKey,
                     AiTranslationBaseUrl = settings.AiTranslationBaseUrl,
                     AiTranslationModel = settings.AiTranslationModel,
-                    AiTranslationLanguage = settings.AiTranslationLanguage
+                    AiTranslationLanguage = settings.AiTranslationLanguage,
+                    SoloistExecutable = settings.SoloistExecutable,
+                    SoloistApiKey = settings.SoloistApiKey
                 }));
             Secure(temporary, UnixFileMode.UserRead | UnixFileMode.UserWrite);
             File.Move(temporary, path, overwrite: true);
@@ -334,6 +341,8 @@ internal static class SettingsStore
             ScalePercent = NormalizeScalePercent(settings.ScalePercent),
             SpotifyClientId = settings.SpotifyClientId?.Trim() ?? string.Empty,
             SpotifyClientSecret = settings.SpotifyClientSecret?.Trim() ?? string.Empty,
+            SoloistExecutable = settings.SoloistExecutable?.Trim() ?? string.Empty,
+            SoloistApiKey = settings.SoloistApiKey?.Trim() ?? string.Empty,
             AiTranslationEnabled = settings.AiTranslationEnabled && !string.IsNullOrWhiteSpace(settings.AiTranslationApiKey),
             AiTranslationApiKey = settings.AiTranslationApiKey?.Trim() ?? string.Empty,
             AiTranslationBaseUrl = string.IsNullOrWhiteSpace(settings.AiTranslationBaseUrl)
@@ -436,6 +445,8 @@ internal static class SettingsStore
         public double? IslandScalePercent { get; init; }
         public string? SpotifyClientId { get; init; }
         public string? SpotifyClientSecret { get; init; }
+        public string? SoloistExecutable { get; init; }
+        public string? SoloistApiKey { get; init; }
         public int? TopOffset { get; init; }
         public int? LyricsOffsetMs { get; init; }
         public bool? ShowTranslation { get; init; }

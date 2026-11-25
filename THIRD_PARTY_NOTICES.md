@@ -1,5 +1,11 @@
 # Third-party notices
 
+## Spotify
+
+The music library displays the unmodified Spotify logo from the
+[Spotify design guidelines](https://developer.spotify.com/documentation/design).
+Spotify is a trademark of Spotify AB.
+
 ## NWayland
 
 The Wayland backend uses [NWayland](https://github.com/AvaloniaUI/NWayland),

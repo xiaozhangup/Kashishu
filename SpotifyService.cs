@@ -9,7 +9,7 @@ using System.Text.Json;
 
 namespace Kashishu;
 
-internal sealed class SpotifyService : IPlaybackSource
+internal sealed partial class SpotifyService : IPlaybackSource
 {
     private const string RedirectUri = "http://127.0.0.1:43821/callback";
     private const string ControlScope = "user-modify-playback-state";
@@ -767,15 +767,20 @@ internal sealed class SpotifyService : IPlaybackSource
         }
     }
 
-    private async Task<TokenState> AuthorizeAsync(CancellationToken cancellationToken)
+    private Task<TokenState> AuthorizeAsync(CancellationToken cancellationToken) =>
+        AuthorizeAsync(Scope, showPlaybackStatus: true, cancellationToken);
+
+    private async Task<TokenState> AuthorizeAsync(
+        string scope, bool showPlaybackStatus, CancellationToken cancellationToken)
     {
-        SetStatus("正在等待 Spotify 授权…");
+        if (showPlaybackStatus)
+            SetStatus("正在等待 Spotify 授权…");
         var state = Base64Url(RandomNumberGenerator.GetBytes(32));
         var url = "https://accounts.spotify.com/authorize"
             + $"?client_id={Uri.EscapeDataString(_credentials.ClientId)}"
             + "&response_type=code"
             + $"&redirect_uri={Uri.EscapeDataString(RedirectUri)}"
-            + $"&scope={Uri.EscapeDataString(Scope)}"
+            + $"&scope={Uri.EscapeDataString(scope)}"
             + $"&state={Uri.EscapeDataString(state)}";
 
         var listener = new TcpListener(IPAddress.Loopback, 43821);
@@ -831,7 +836,8 @@ internal sealed class SpotifyService : IPlaybackSource
                         ["redirect_uri"] = RedirectUri
                     },
                     null,
-                    cancellationToken);
+                    cancellationToken,
+                    scope);
                 await SaveTokenAsync(tokens, cancellationToken);
                 return tokens;
             }
@@ -859,7 +865,8 @@ internal sealed class SpotifyService : IPlaybackSource
     private async Task<TokenState> RequestTokenAsync(
         IReadOnlyDictionary<string, string> fields,
         string? existingRefreshToken,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        string? requestedScope = null)
     {
         using var request = new HttpRequestMessage(HttpMethod.Post, "https://accounts.spotify.com/api/token");
         var basic = Convert.ToBase64String(Encoding.UTF8.GetBytes(
@@ -891,7 +898,7 @@ internal sealed class SpotifyService : IPlaybackSource
             refreshToken,
             DateTimeOffset.UtcNow.AddSeconds(expiresIn),
             _credentials.ClientId,
-            GetString(root, "scope") ?? (existingRefreshToken is null ? Scope : _tokens?.GrantedScope));
+            GetString(root, "scope") ?? (existingRefreshToken is null ? requestedScope : _tokens?.GrantedScope));
     }
 
     private async Task<TokenState?> LoadTokenAsync(CancellationToken cancellationToken)
@@ -1015,7 +1022,7 @@ internal sealed class SpotifyService : IPlaybackSource
         return selected;
     }
 
-    private async Task<ImmutableArray<LyricLine>> LoadLyricsSafeAsync(
+    internal static async Task<ImmutableArray<LyricLine>> LoadLyricsSafeAsync(
         SourceTrack track,
         LyricsSourcePreference source,
         CancellationToken cancellationToken)
@@ -1205,22 +1212,31 @@ internal sealed class SpotifyService : IPlaybackSource
     }
 
     private static string? GetString(JsonElement parent, string property) =>
-        parent.TryGetProperty(property, out var value) && value.ValueKind == JsonValueKind.String
+        parent.ValueKind == JsonValueKind.Object
+        && parent.TryGetProperty(property, out var value)
+        && value.ValueKind == JsonValueKind.String
             ? value.GetString()
             : null;
 
     private static long GetInt64(JsonElement parent, string property) =>
-        parent.TryGetProperty(property, out var value) && value.TryGetInt64(out var number)
+        parent.ValueKind == JsonValueKind.Object
+        && parent.TryGetProperty(property, out var value)
+        && value.ValueKind == JsonValueKind.Number
+        && value.TryGetInt64(out var number)
             ? number
             : 0;
 
     private static long? GetNullableInt64(JsonElement parent, string property) =>
-        parent.TryGetProperty(property, out var value) && value.TryGetInt64(out var number)
+        parent.ValueKind == JsonValueKind.Object
+        && parent.TryGetProperty(property, out var value)
+        && value.ValueKind == JsonValueKind.Number
+        && value.TryGetInt64(out var number)
             ? number
             : null;
 
     private static bool GetBoolean(JsonElement parent, string property) =>
-        parent.TryGetProperty(property, out var value)
+        parent.ValueKind == JsonValueKind.Object
+        && parent.TryGetProperty(property, out var value)
         && value.ValueKind is JsonValueKind.True or JsonValueKind.False
         && value.GetBoolean();
 

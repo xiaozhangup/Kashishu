@@ -39,7 +39,7 @@ internal sealed class SettingsPage : PanelPage
         Func<IslandSettings> currentSettings,
         Func<bool> refreshCurrentTrack,
         AiLyricsTranslation aiTranslation,
-        Action<string> showToast)
+        Action<string> showToast, Func<string>? soloistStatus = null)
     {
         var settings = SettingsStore.Normalize(initialSettings);
 
@@ -129,10 +129,45 @@ internal sealed class SettingsPage : PanelPage
                 credentialActions
             }
         });
-        spotifyForm.IsVisible = settings.PlaybackSource == PlaybackSourcePreference.Spotify;
+        var soloistKey = Ui.Input("Soloist API Key", string.Empty, settings.SoloistApiKey, password: true);
+        var status = Ui.Text(string.Empty, 12, muted: true);
+        status.VerticalAlignment = VerticalAlignment.Center;
+        var saveKey = Ui.Button("保存并重新连接", accent: true);
+        saveKey.Click += (_, _) =>
+        {
+            if (!Commit(settings with { SoloistApiKey = soloistKey.Text?.Trim() ?? string.Empty }, restartPlayback: true))
+                showToast("保存失败，请查看终端错误");
+        };
+        var keyActions = new Grid
+        {
+            ColumnDefinitions = new ColumnDefinitions("*,12,Auto"),
+            Children = { status, saveKey }
+        };
+        Grid.SetColumn(saveKey, 2);
+        var soloistForm = Ui.Block(new StackPanel
+        {
+            Spacing = 8,
+            Children = { Ui.Text("API Key", 14, FontWeight.SemiBold), soloistKey, keyActions }
+        });
+        var statusTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
+        statusTimer.Tick += (_, _) => status.Text = soloistStatus?.Invoke();
+        void ShowSource(PlaybackSourcePreference source)
+        {
+            spotifyForm.IsVisible = source == PlaybackSourcePreference.Spotify;
+            soloistForm.IsVisible = source == PlaybackSourcePreference.Soloist;
+            if (soloistForm.IsVisible) status.Text = soloistStatus?.Invoke();
+            statusTimer.IsEnabled = IsVisible && soloistForm.IsVisible;
+        }
+        PropertyChanged += (_, args) =>
+        {
+            if (args.Property == IsVisibleProperty) statusTimer.IsEnabled = IsVisible && soloistForm.IsVisible;
+        };
+        DetachedFromVisualTree += (_, _) => statusTimer.Stop();
+        ShowSource(settings.PlaybackSource);
         var playbackSourceChoices = new[]
         {
             (PlaybackSourcePreference.Spotify, "Spotify"),
+            (PlaybackSourcePreference.Soloist, "Soloist"),
             (PlaybackSourcePreference.Mpris, "本地 MPRIS")
         };
         var playbackSourceStatus = Ui.Text(string.Empty, 12, muted: true);
@@ -143,7 +178,7 @@ internal sealed class SettingsPage : PanelPage
             var previous = settings.PlaybackSource;
             if (Commit(settings with { PlaybackSource = value }))
             {
-                spotifyForm.IsVisible = value == PlaybackSourcePreference.Spotify;
+                ShowSource(value);
                 playbackSourceStatus.Text = string.Empty;
                 return;
             }
@@ -157,7 +192,7 @@ internal sealed class SettingsPage : PanelPage
             Ui.Row(Ui.Text("当前来源", 14, FontWeight.SemiBold),
                 playbackSourceStatus,
                 playbackSource),
-            spotifyForm);
+            spotifyForm, soloistForm);
 
         // ── 歌词 ────────────────────────────────────────────────────────────────
         var trackOffsetManagerTitle = Ui.Text(string.Empty, 14, FontWeight.SemiBold);

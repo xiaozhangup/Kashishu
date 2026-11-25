@@ -1,7 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <OutputType>Exe</OutputType>
-    <Version>0.1.17</Version>
+    <Version>0.1.18</Version>
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
@@ -32,6 +32,7 @@
 
   <ItemGroup>
     <EmbeddedResource Include="Resources/Headphones/*.json" LogicalName="Kashishu.Headphones.%(Filename)%(Extension)" />
+    <EmbeddedResource Include="Resources/Icons/spotify-logo-white.png" LogicalName="Kashishu.Icons.spotify-logo-white.png" />
     <EmbeddedResource Include="Resources/Icons/*.svg" LogicalName="Kashishu.Icons.%(Filename)%(Extension)" />
     <EmbeddedResource
       Include="Resources/Icons/kashishu.png"
