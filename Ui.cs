@@ -11,6 +11,8 @@ namespace Kashishu;
 /// <summary>Small widget kit shared by the settings and headphone windows.</summary>
 internal static class Ui
 {
+    internal static readonly Thickness CjkTextCenterMargin = new(0, -0.75, 0, 0.75);
+
     public static TextBlock Text(string text, double size = 14, FontWeight? weight = null, bool muted = false) => new()
     {
         Text = text,
@@ -101,7 +103,7 @@ internal static class Ui
         {
             Content = text,
             Height = 36,
-            Padding = new Thickness(18, 0),
+            Padding = new Thickness(18, 0, 18, 1.5),
             Background = accent ? LyricsTheme.Accent : LyricsTheme.InputBackground,
             Foreground = accent ? LyricsTheme.OnAccent : LyricsTheme.PrimaryText,
             BorderBrush = LyricsTheme.CardBorder,
@@ -270,7 +272,7 @@ internal sealed class Segmented<T> : Border
                 Content = label,
                 Height = 32,
                 MinWidth = _fill ? 0 : 64,
-                Padding = new Thickness(_fill ? 6 : 14, 0),
+                Padding = new Thickness(_fill ? 6 : 14, 0, _fill ? 6 : 14, 1.5),
                 Margin = new Thickness(i == 0 ? 0 : 2, 0, 0, 0),
                 Background = Brushes.Transparent,
                 Foreground = LyricsTheme.PrimaryText,

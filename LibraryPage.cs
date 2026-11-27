@@ -145,9 +145,20 @@ internal sealed class LibraryPage : UserControl
     private readonly PathIcon _miniPlayIcon;
     private readonly Button _miniNext;
     private readonly Button _miniShuffle;
+    private readonly PathIcon _miniShuffleIcon;
     private readonly Button _miniStopQueue;
-    private readonly Button _dockPlayAll = Ui.Button("播放全部", accent: true);
+    private readonly Button _dockPlayAll = Ui.Button("播放全部");
     private readonly Button _dockShuffle = Ui.Button("随机");
+    private readonly PathIcon _dockShuffleIcon = LibraryIcons.Icon(LibraryIcons.Shuffle, 13, LyricsTheme.PrimaryText);
+    private readonly TextBlock _dockShuffleText = new()
+    {
+        Text = "随机",
+        FontWeight = FontWeight.Medium,
+        Margin = Ui.CjkTextCenterMargin,
+        VerticalAlignment = VerticalAlignment.Center,
+        Foreground = LyricsTheme.PrimaryText
+    };
+    private bool? _dockShuffleVisualActive;
     private readonly Button _dockOpenSpotify = Ui.Button("在 Spotify 打开");
 
     // State
@@ -179,6 +190,7 @@ internal sealed class LibraryPage : UserControl
     private bool _miniBarVisible;
     private string _lastSearchQuery = string.Empty;
     private int? _selectedCollectionTotal;
+    private LibraryTab? _searchDetailReturnTab;
 
     public IReadOnlyList<Control> EntranceTargets => _entrance;
 
@@ -203,6 +215,7 @@ internal sealed class LibraryPage : UserControl
         _tabs.Changed += SwitchTab;
 
         _statusText.VerticalAlignment = VerticalAlignment.Center;
+        _statusText.Margin = Ui.CjkTextCenterMargin;
         _statusPill = new Border
         {
             Background = LyricsTheme.InsetBackground,
@@ -482,7 +495,7 @@ internal sealed class LibraryPage : UserControl
         _setupCard.IsVisible = false;
 
         // ── Floating Bottom Blur Dock ──────────────────────────────────────────
-        _miniCover = new LibraryArtTile(_artwork, 36, LibraryIcons.Note, LyricsTheme.Accent, cornerRadius: LyricsTheme.ControlRadius);
+        _miniCover = new LibraryArtTile(_artwork, 38, LibraryIcons.Note, LyricsTheme.Accent, cornerRadius: 9);
         _miniTitle.TextWrapping = TextWrapping.NoWrap;
         _miniTitle.TextTrimming = TextTrimming.CharacterEllipsis;
         _miniTitle.FontSize = 13;
@@ -512,7 +525,9 @@ internal sealed class LibraryPage : UserControl
         _miniNext = CompactIconButton("下一首", LibraryIcons.Next, 15);
         _miniNext.Width = _miniNext.Height = 34;
         _miniNext.CornerRadius = new CornerRadius(17);
-        _miniShuffle = CompactIconButton("随机队列", LibraryIcons.Shuffle, 14);
+        _miniShuffleIcon = LibraryIcons.Icon(LibraryIcons.Shuffle, 14, LyricsTheme.PrimaryText);
+        _miniShuffle = CompactIconButton("随机播放", LibraryIcons.Shuffle, 14);
+        _miniShuffle.Content = _miniShuffleIcon;
         _miniShuffle.Width = _miniShuffle.Height = 32;
         _miniShuffle.CornerRadius = new CornerRadius(16);
         _miniStopQueue = CompactIconButton("结束连播", LibraryIcons.Close, 13);
@@ -522,39 +537,35 @@ internal sealed class LibraryPage : UserControl
         _miniPrev.Click += async (_, _) => await HandlePreviousAsync();
         _miniPlayPause.Click += async (_, _) => await HandlePlayPauseAsync();
         _miniNext.Click += async (_, _) => await HandleNextAsync();
-        _miniShuffle.Click += (_, _) =>
-        {
-            _queue.ToggleShuffle();
-            _showToast(_queue.IsShuffled ? "已切换为随机连播" : "已切换为顺序连播");
-        };
+        _miniShuffle.Click += async (_, _) => await HandleShuffleAsync();
         _miniStopQueue.Click += (_, _) => _queue.Stop();
 
         _dockPlayAll.Height = 34;
         _dockPlayAll.Padding = new Thickness(14, 0);
         _dockPlayAll.CornerRadius = new CornerRadius(LyricsTheme.PillRadius);
         _dockPlayAll.FontSize = 12.5;
-        _dockPlayAll.Background = LyricsTheme.InputBackground;
-        _dockPlayAll.Foreground = LyricsTheme.PrimaryText;
-        _dockPlayAll.BorderThickness = new Thickness(1);
-        _dockPlayAll.Classes.Set("accent", false);
-        _dockPlayAll.Classes.Set("glass", true);
+        _dockPlayAll.FontWeight = FontWeight.Medium;
         _dockPlayAll.Content = DockButtonLabel(LibraryIcons.Play, "播放全部", LyricsTheme.PrimaryText);
         _dockPlayAll.Click += async (_, _) =>
         {
             var pane = ActiveTrackPane();
-            await PlayFromListAsync(pane.VisibleTracks, null, shuffle: false, ActiveContextUri(pane));
+            await PlayFromListAsync(pane.VisibleTracks, null, shuffle: null, ActiveContextUri(pane));
         };
 
         _dockShuffle.Height = 34;
         _dockShuffle.Padding = new Thickness(12, 0);
         _dockShuffle.CornerRadius = new CornerRadius(LyricsTheme.PillRadius);
         _dockShuffle.FontSize = 12.5;
-        _dockShuffle.Content = DockButtonLabel(LibraryIcons.Shuffle, "随机", LyricsTheme.PrimaryText);
-        _dockShuffle.Click += async (_, _) =>
+        _dockShuffle.FontWeight = FontWeight.Medium;
+        _dockShuffle.BorderThickness = new Thickness(1);
+        _dockShuffle.Content = new StackPanel
         {
-            var pane = ActiveTrackPane();
-            await PlayFromListAsync(pane.VisibleTracks, null, shuffle: true, ActiveContextUri(pane));
+            Orientation = Orientation.Horizontal,
+            Spacing = 5,
+            VerticalAlignment = VerticalAlignment.Center,
+            Children = { _dockShuffleIcon, _dockShuffleText }
         };
+        _dockShuffle.Click += async (_, _) => await HandleShuffleAsync();
 
         _dockOpenSpotify.Width = 34;
         _dockOpenSpotify.Height = 34;
@@ -568,7 +579,7 @@ internal sealed class LibraryPage : UserControl
 
         var miniInfo = new StackPanel
         {
-            Spacing = 2,
+            Spacing = 1,
             VerticalAlignment = VerticalAlignment.Center,
             Children = { _miniTitle, _miniSubtitle }
         };
@@ -598,7 +609,7 @@ internal sealed class LibraryPage : UserControl
 
         var dockContent = new Grid
         {
-            Margin = new Thickness(12, 8),
+            Margin = new Thickness(8, 8, 10, 8),
             VerticalAlignment = VerticalAlignment.Center,
             ColumnDefinitions = new ColumnDefinitions("*,12,Auto,12,*"),
             Children = { leftTrackGroup, transportControls, listActions }
@@ -1372,6 +1383,7 @@ internal sealed class LibraryPage : UserControl
     {
         if (_library is not { } library)
             return;
+        _searchDetailReturnTab = null;
         if (_inSearchDetail)
             ExitSearchDetail();
         _lastSearchQuery = query;
@@ -1500,8 +1512,17 @@ internal sealed class LibraryPage : UserControl
 
     private string? _searchDetailSpotifyUrl;
 
-    private void OpenSearchAlbum(LibraryAlbum album)
+    private static string BackLabelForTab(LibraryTab? tab) => tab switch
     {
+        LibraryTab.Collections => "返回歌单",
+        LibraryTab.Recent => "返回最近播放",
+        LibraryTab.Albums => "返回专辑",
+        _ => "返回搜索结果"
+    };
+
+    private void OpenSearchAlbum(LibraryAlbum album, LibraryTab? returnTab = null)
+    {
+        _searchDetailReturnTab = returnTab == LibraryTab.Search ? null : returnTab;
         _searchDetailPlaylistId = null;
         _searchDetailAlbumId = album.Id;
         _searchDetailAlbumName = album.Name;
@@ -1509,6 +1530,7 @@ internal sealed class LibraryPage : UserControl
         _searchDetailTitle = album.Name;
         _searchDetailSpotifyUrl = album.SpotifyUrl;
 
+        _searchDetailPane.SetBackLabel(BackLabelForTab(_searchDetailReturnTab));
         _searchDetailPane.ConfigureTitle(album.Name, album.TrackCount > 0 ? album.TrackCount : null);
         EnterSearchDetail();
         _ = LoadSearchDetailMoreAsync();
@@ -1516,6 +1538,7 @@ internal sealed class LibraryPage : UserControl
 
     private void OpenSearchPlaylist(LibraryPlaylist playlist)
     {
+        _searchDetailReturnTab = null;
         _searchDetailAlbumId = null;
         _searchDetailAlbumName = null;
         _searchDetailAlbumImage = null;
@@ -1523,6 +1546,7 @@ internal sealed class LibraryPage : UserControl
         _searchDetailTitle = playlist.Name;
         _searchDetailSpotifyUrl = playlist.SpotifyUrl;
 
+        _searchDetailPane.SetBackLabel("返回搜索结果");
         _searchDetailPane.ConfigureTitle(playlist.Name, playlist.TrackCount);
         EnterSearchDetail();
         _ = LoadSearchDetailMoreAsync();
@@ -1532,6 +1556,7 @@ internal sealed class LibraryPage : UserControl
     {
         if (string.IsNullOrWhiteSpace(track.AlbumId))
             return;
+        var origin = _activeTab;
         var album = new LibraryAlbum(
             track.AlbumId,
             track.Album ?? "未知专辑",
@@ -1541,7 +1566,7 @@ internal sealed class LibraryPage : UserControl
             track.AlbumUrl,
             track.ImageUrl);
         SwitchTab(LibraryTab.Search);
-        OpenSearchAlbum(album);
+        OpenSearchAlbum(album, origin);
     }
 
     private void EnterSearchDetail()
@@ -1558,10 +1583,17 @@ internal sealed class LibraryPage : UserControl
     private void ExitSearchDetail()
     {
         if (!_inSearchDetail) return;
+        var returnTab = _searchDetailReturnTab;
+        _searchDetailReturnTab = null;
         _inSearchDetail = false;
         _searchRequest?.Cancel();
         _searchDetailPane.IsVisible = false;
         _searchResultsView.IsVisible = true;
+        if (returnTab is { } target)
+        {
+            SwitchTab(target);
+            return;
+        }
         Motion.In(_searchResultsView, -20, 0);
         UpdateMiniBar();
     }
@@ -1893,7 +1925,7 @@ internal sealed class LibraryPage : UserControl
             var fallbackStart = fallbackUri is not null
                 ? visibleTracks.FirstOrDefault(t => t.CanPlay && t.Uri == fallbackUri) ?? startTrack
                 : startTrack;
-            _queue.Start(ActiveListTitle(), visibleTracks, fallbackStart, shuffle == true);
+            _queue.Start(ActiveListTitle(), visibleTracks, fallbackStart, shuffle ?? (_store.Snapshot.Controls.Shuffle == true));
         }
         catch (OperationCanceledException) { }
         catch (InvalidOperationException ex)
@@ -1971,11 +2003,29 @@ internal sealed class LibraryPage : UserControl
         await SendControlAsync(PlaybackAction.PlayPause);
     }
 
-    private async Task SendControlAsync(PlaybackAction action)
+    private async Task HandleShuffleAsync()
+    {
+        if (_queue.IsActive)
+        {
+            _queue.ToggleShuffle();
+            _showToast(_queue.IsShuffled ? "已切换为随机连播" : "已切换为顺序连播");
+            return;
+        }
+        if (_store.Snapshot is { Track: not null, Controls.Shuffle: bool currentShuffle })
+        {
+            await SendControlAsync(PlaybackAction.Shuffle, currentShuffle ? 0 : 1);
+            return;
+        }
+        var pane = ActiveTrackPane();
+        if (pane.HasPlayable)
+            await PlayFromListAsync(pane.VisibleTracks, null, shuffle: true, ActiveContextUri(pane));
+    }
+
+    private async Task SendControlAsync(PlaybackAction action, double value = 0)
     {
         try
         {
-            var error = await _controlPlayback(new PlaybackCommand(action, 0, _store.Snapshot.Track?.Id), _session.Token);
+            var error = await _controlPlayback(new PlaybackCommand(action, value, _store.Snapshot.Track?.Id), _session.Token);
             if (!string.IsNullOrEmpty(error))
                 _showToast(error);
         }
@@ -2118,7 +2168,8 @@ internal sealed class LibraryPage : UserControl
             new TextBlock
             {
                 Text = text,
-                LineHeight = 16,
+                FontWeight = FontWeight.Medium,
+                Margin = Ui.CjkTextCenterMargin,
                 VerticalAlignment = VerticalAlignment.Center,
                 Foreground = foreground
             }
@@ -2166,11 +2217,16 @@ internal sealed class LibraryPage : UserControl
         _miniPlayIcon.Data = StreamGeometry.Parse(snapshot.IsPlaying ? LibraryIcons.Pause : LibraryIcons.Play);
         _miniPlayIcon.Margin = new Thickness(snapshot.IsPlaying ? 0 : 1.5, 0, 0, 0);
         _miniPlayPause.IsEnabled = _queue.IsActive || (snapshot.Track is not null && snapshot.Controls.CanPlayPause);
-        _miniShuffle.IsVisible = _queue.IsActive;
+        var canToggleSpotifyShuffle = !_queue.IsActive && track is not null && snapshot.Controls.Shuffle.HasValue;
+        var isShuffled = _queue.IsActive ? _queue.IsShuffled : snapshot.Controls.Shuffle == true;
+        var shuffleTip = _queue.IsActive
+            ? (_queue.IsShuffled ? "随机连播已开启（点击切换为顺序）" : "随机连播已关闭（点击开启）")
+            : canToggleSpotifyShuffle
+                ? (isShuffled ? "Spotify 随机播放已开启（点击关闭）" : "Spotify 随机播放已关闭（点击开启）")
+                : "随机播放当前列表";
         _miniStopQueue.IsVisible = _queue.IsActive;
         if (_queue.IsActive)
         {
-            _miniShuffle.Opacity = _queue.IsShuffled ? 1 : 0.6;
             _miniPrev.IsEnabled = _queue.CanPrevious;
             _miniNext.IsEnabled = _queue.CanNext;
         }
@@ -2181,10 +2237,29 @@ internal sealed class LibraryPage : UserControl
         }
 
         _dockPlayAll.IsEnabled = hasPlayable;
-        _dockShuffle.IsEnabled = hasPlayable;
-        _dockOpenSpotify.IsVisible = spotifyUrl is not null;
+        _dockShuffle.IsEnabled = _queue.IsActive || canToggleSpotifyShuffle || hasPlayable;
+        if (_dockShuffleVisualActive != isShuffled)
+        {
+            _dockShuffleVisualActive = isShuffled;
+            _dockShuffle.Classes.Set("accent", isShuffled);
+            _dockShuffle.Classes.Set("glass", !isShuffled);
+            _dockShuffle.Background = isShuffled ? LyricsTheme.Accent : LyricsTheme.InputBackground;
+            _dockShuffle.BorderBrush = isShuffled ? Brushes.Transparent : LyricsTheme.CardBorder;
+            _dockShuffle.Foreground = isShuffled ? LyricsTheme.OnAccent : LyricsTheme.PrimaryText;
+            _dockShuffleIcon.Foreground = isShuffled ? LyricsTheme.OnAccent : LyricsTheme.PrimaryText;
+            _dockShuffleText.Foreground = isShuffled ? LyricsTheme.OnAccent : LyricsTheme.PrimaryText;
+        }
+        ToolTip.SetTip(_dockShuffle, shuffleTip);
+        AutomationProperties.SetName(_dockShuffle, shuffleTip);
+
         var compactDock = Bounds.Width > 0 && Bounds.Width < 740;
         _dockShuffle.IsVisible = !compactDock;
+        _miniShuffle.IsVisible = compactDock && (_queue.IsActive || canToggleSpotifyShuffle);
+        _miniShuffle.IsEnabled = _queue.IsActive || canToggleSpotifyShuffle;
+        _miniShuffleIcon.Foreground = isShuffled ? LyricsTheme.Accent : LyricsTheme.PrimaryText;
+        _miniShuffle.Opacity = isShuffled ? 1 : 0.65;
+        ToolTip.SetTip(_miniShuffle, shuffleTip);
+        AutomationProperties.SetName(_miniShuffle, shuffleTip);
         _dockOpenSpotify.IsVisible = spotifyUrl is not null && !compactDock;
         SyncDockPalette(animate: true);
     }
@@ -2532,6 +2607,7 @@ internal sealed class LibraryPage : UserControl
         private readonly Dictionary<LibraryTrack, int> _originalIndex = new(ReferenceEqualityComparer.Instance);
 
         private readonly Button _backButton;
+        private readonly TextBlock _backLabel;
         private readonly TextBlock _title = Ui.Text("", 14, FontWeight.SemiBold);
         private readonly TextBox _filterBox = CreateSearchBox("筛选歌曲、歌手或专辑…");
         private readonly Button _filterClear = ClearInputButton();
@@ -2590,28 +2666,43 @@ internal sealed class LibraryPage : UserControl
             _registerRow = registerRow;
             _unregisterRow = unregisterRow;
 
+            _backLabel = new TextBlock
+            {
+                Text = backLabel ?? "返回",
+                FontSize = 12,
+                FontWeight = FontWeight.Medium,
+                Margin = Ui.CjkTextCenterMargin,
+                TextWrapping = TextWrapping.NoWrap,
+                VerticalAlignment = VerticalAlignment.Center,
+                Foreground = LyricsTheme.PrimaryText
+            };
             _backButton = new Button
             {
                 Height = 30,
-                Padding = new Thickness(10, 0),
+                Padding = new Thickness(10, 0, 12, 0),
                 Background = LyricsTheme.InputBackground,
                 BorderBrush = LyricsTheme.CardBorder,
                 BorderThickness = new Thickness(1),
                 CornerRadius = new CornerRadius(LyricsTheme.PillRadius),
                 Foreground = LyricsTheme.PrimaryText,
+                HorizontalContentAlignment = HorizontalAlignment.Center,
+                VerticalContentAlignment = VerticalAlignment.Center,
                 Classes = { "glass" },
                 IsVisible = backLabel is not null,
                 Content = new StackPanel
                 {
                     Orientation = Orientation.Horizontal,
                     Spacing = 5,
+                    VerticalAlignment = VerticalAlignment.Center,
                     Children =
                     {
                         LibraryIcons.Icon(LibraryIcons.Back, 13, LyricsTheme.PrimaryText),
-                        Ui.Text(backLabel ?? "返回", 11.5, FontWeight.Medium)
+                        _backLabel
                     }
                 }
             };
+            if (backLabel is not null)
+                AutomationProperties.SetName(_backButton, backLabel);
             if (onBack is not null)
                 _backButton.Click += (_, _) => onBack();
 
@@ -2658,13 +2749,14 @@ internal sealed class LibraryPage : UserControl
 
             _countLabel.VerticalAlignment = VerticalAlignment.Center;
             _countLabel.HorizontalAlignment = HorizontalAlignment.Right;
+            _countLabel.Margin = Ui.CjkTextCenterMargin;
             var toolbar = new Grid
             {
                 ColumnDefinitions = new ColumnDefinitions("Auto,Auto,*,8,Auto,8,Auto"),
                 Children = { _backButton, _title, filterWrap, _sortCombo, _countLabel }
             };
             _backButton.Margin = new Thickness(0, 0, 8, 0);
-            _title.Margin = new Thickness(0, 0, 10, 0);
+            _title.Margin = new Thickness(0, -0.75, 10, 0.75);
             SetColumn(_title, 1);
             SetColumn(filterWrap, 2);
             SetColumn(_sortCombo, 4);
@@ -2753,6 +2845,12 @@ internal sealed class LibraryPage : UserControl
             unifiedCard.CornerRadius = new CornerRadius(LyricsTheme.CardRadius);
             RowDefinitions = new RowDefinitions("*");
             Children.Add(unifiedCard);
+        }
+
+        public void SetBackLabel(string label)
+        {
+            _backLabel.Text = label;
+            AutomationProperties.SetName(_backButton, label);
         }
 
         public void ConfigureTitle(string title, int? totalCount)
@@ -2975,6 +3073,7 @@ internal sealed class LibraryPage : UserControl
             {
                 Text = label,
                 Foreground = LyricsTheme.PrimaryText,
+                Margin = Ui.CjkTextCenterMargin,
                 VerticalAlignment = VerticalAlignment.Center,
                 TextTrimming = TextTrimming.CharacterEllipsis,
                 MaxWidth = 220
@@ -2995,7 +3094,7 @@ internal sealed class LibraryPage : UserControl
             Children =
             {
                 LibraryIcons.Icon(iconPath, 14, foreground),
-                new TextBlock { Text = text, VerticalAlignment = VerticalAlignment.Center, Foreground = foreground }
+                new TextBlock { Text = text, Margin = Ui.CjkTextCenterMargin, VerticalAlignment = VerticalAlignment.Center, Foreground = foreground }
             }
         };
     }

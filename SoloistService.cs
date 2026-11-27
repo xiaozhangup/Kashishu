@@ -241,8 +241,15 @@ internal sealed class SoloistService(
             if (!wasActive && await SendAsync("activate", linked.Token) is { } activateError)
                 return new(false, activateError);
 
-            if (request.Shuffle is bool shuffle)
-                await SendAsync("set_shuffle", linked.Token, "enabled", shuffle);
+            if (request.Shuffle is bool shuffle
+                && await SendAsync("set_shuffle", linked.Token, "enabled", shuffle) is null)
+            {
+                lock (_stateGate)
+                {
+                    _shuffle = shuffle;
+                    Publish();
+                }
+            }
 
             if (!wasActive)
                 await Task.Delay(120, linked.Token);

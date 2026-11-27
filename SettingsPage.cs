@@ -1044,6 +1044,7 @@ internal sealed class SettingsPage : PanelPage
                             Text = section.Title,
                             FontSize = 14,
                             FontWeight = FontWeight.Medium,
+                            Margin = Ui.CjkTextCenterMargin,
                             VerticalAlignment = VerticalAlignment.Center
                         }
                     }
