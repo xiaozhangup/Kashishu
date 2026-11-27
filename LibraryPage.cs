@@ -1808,7 +1808,12 @@ internal sealed class LibraryPage : UserControl
                 : shuffle == true && playable.Count > 0
                     ? playable[Random.Shared.Next(playable.Count)]
                     : null;
-            return new LibraryPlayRequest(contextUri, chosen?.Uri, null, shuffle);
+            return new LibraryPlayRequest(
+                contextUri,
+                chosen?.Uri,
+                null,
+                shuffle,
+                chosen?.Uri ?? playable.FirstOrDefault()?.Uri);
         }
 
         if (playable.Count == 0)
@@ -1884,7 +1889,11 @@ internal sealed class LibraryPage : UserControl
                 _showToast(result.Error);
                 return;
             }
-            _queue.Start(ActiveListTitle(), visibleTracks, startTrack, shuffle == true);
+            var fallbackUri = request.FallbackTrackUri ?? request.StartTrackUri;
+            var fallbackStart = fallbackUri is not null
+                ? visibleTracks.FirstOrDefault(t => t.CanPlay && t.Uri == fallbackUri) ?? startTrack
+                : startTrack;
+            _queue.Start(ActiveListTitle(), visibleTracks, fallbackStart, shuffle == true);
         }
         catch (OperationCanceledException) { }
         catch (InvalidOperationException ex)
@@ -2060,7 +2069,19 @@ internal sealed class LibraryPage : UserControl
 
         var nextId = snapshot.Track?.Id;
         var nextPlaying = snapshot.Track is not null && snapshot.IsPlaying;
-        if (nextId != _currentTrackId || nextPlaying != _currentIsPlaying)
+        var favoriteChanged = false;
+        if (snapshot.Track is { Id: var trackId }
+            && SongBanner.SpotifyUrl(trackId, PlaybackSourcePreference.Soloist) is not null
+            && snapshot.Controls.IsFavorite is bool fav)
+        {
+            var uri = "spotify:track:" + trackId;
+            if (!_favorites.TryGetValue(uri, out var existing) || existing != fav)
+            {
+                _favorites[uri] = fav;
+                favoriteChanged = true;
+            }
+        }
+        if (nextId != _currentTrackId || nextPlaying != _currentIsPlaying || favoriteChanged)
         {
             _currentTrackId = nextId;
             _currentIsPlaying = nextPlaying;
@@ -2144,6 +2165,7 @@ internal sealed class LibraryPage : UserControl
 
         _miniPlayIcon.Data = StreamGeometry.Parse(snapshot.IsPlaying ? LibraryIcons.Pause : LibraryIcons.Play);
         _miniPlayIcon.Margin = new Thickness(snapshot.IsPlaying ? 0 : 1.5, 0, 0, 0);
+        _miniPlayPause.IsEnabled = _queue.IsActive || (snapshot.Track is not null && snapshot.Controls.CanPlayPause);
         _miniShuffle.IsVisible = _queue.IsActive;
         _miniStopQueue.IsVisible = _queue.IsActive;
         if (_queue.IsActive)

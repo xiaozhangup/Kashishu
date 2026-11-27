@@ -658,20 +658,20 @@ internal sealed class LyricsWindowControl : Control, IDisposable
             if (error is not null)
             {
                 if (command.Action == PlaybackAction.Favorite) Console.Error.WriteLine($"[favorite] {error}");
-                else Toast(error);
+                Toast(error);
             }
             else if (command.Action == PlaybackAction.Seek) _browseScroll = null;
         }
         catch (OperationCanceledException)
         {
-            if (!_disposed && command.Action != PlaybackAction.Favorite) Toast("播放操作已取消或超时");
+            if (!_disposed) Toast(command.Action == PlaybackAction.Favorite ? "收藏操作已取消或超时" : "播放操作已取消或超时");
         }
         catch (Exception exception)
         {
             if (!_disposed)
             {
                 if (command.Action == PlaybackAction.Favorite) Console.Error.WriteLine($"[favorite] {exception}");
-                else Toast("播放控制失败，请检查播放器连接");
+                Toast(command.Action == PlaybackAction.Favorite ? "收藏操作失败，请检查 Spotify 设置或连接" : "播放控制失败，请检查播放器连接");
             }
         }
         finally { _busy = false; if (!_disposed) WakeRender(); }

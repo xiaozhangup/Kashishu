@@ -193,7 +193,8 @@ public sealed class App : Application
         void UpdateFavorite()
         {
             var snapshot = _store!.Snapshot;
-            favorite.IsVisible = !Program.Options.Demo && _settings.PlaybackSource == PlaybackSourcePreference.Spotify;
+            favorite.IsVisible = !Program.Options.Demo
+                && _settings.PlaybackSource is PlaybackSourcePreference.Spotify or PlaybackSourcePreference.Soloist;
             favorite.Header = snapshot.Controls.IsFavorite == true ? "取消收藏歌曲" : "收藏歌曲";
             favorite.IsEnabled = !favoriteBusy && snapshot.Track is not null && snapshot.Controls.CanFavorite;
         }
@@ -1510,6 +1511,59 @@ internal static class SelfCheck
         Require(contextPayload.Contains("\"context_uri\":\"spotify:playlist:pl_1\"", StringComparison.Ordinal)
                 && contextPayload.Contains(t2.Uri, StringComparison.Ordinal),
             "playlist play payload JSON");
+
+        var contextAllRequest = LibraryPage.BuildPlayRequest("spotify:playlist:pl_1", [t1, t2, t3], null, shuffle: false);
+        Require(contextAllRequest is not null
+                && contextAllRequest.StartTrackUri is null
+                && contextAllRequest.FallbackTrackUri == t1.Uri,
+            "playlist play-all preserves fallback track uri");
+
+        Require(SoloistService.GetFavoriteUri(playingTrack) == "spotify:track:1111111111111111111111"
+                && SoloistService.GetFavoriteUri(demoTrack) is null,
+            "soloist favorite uri validation");
+
+        using var actionsJson = JsonDocument.Parse("""
+        {
+          "play": {},
+          "seek": true,
+          "skip_prev": false,
+          "skip_next": {"allowed": false},
+          "set_shuffle": {"allowed": true}
+        }
+        """);
+        var parsedActions = SoloistService.ParseAvailableActions(actionsJson.RootElement);
+        Require(parsedActions.Contains("play")
+                && parsedActions.Contains("seek")
+                && parsedActions.Contains("set_shuffle")
+                && !parsedActions.Contains("skip_prev")
+                && !parsedActions.Contains("skip_next"),
+            "soloist available actions parsing");
+
+        using var soloistItemJson = JsonDocument.Parse("""
+        {
+          "uri": "spotify:track:5555555555555555555555",
+          "decorations": {
+            "identity": {"name": "Soloist Song"},
+            "parent": {"entity": {"decorations": {"identity": {"name": "Soloist Album"}}}},
+            "creators": [
+              {"entity": {"uri": "spotify:artist:artist_a", "decorations": {"identity": {"name": "Artist A"}}}}
+            ],
+            "playback": {"duration_ms": 215000}
+          }
+        }
+        """);
+        var soloistTrack = SoloistService.ParseEntity(soloistItemJson.RootElement);
+        Require(soloistTrack is not null
+                && soloistTrack.Id == "5555555555555555555555"
+                && soloistTrack.ArtistIds.SequenceEqual(["artist_a"])
+                && soloistTrack.ShareUrl == "https://open.spotify.com/track/5555555555555555555555",
+            "soloist track entity parsing");
+
+        Require(IslandRenderer.StatusSubtitle(null, "Soloist 等待配对，请在 Spotify 中选择 Kashishu Soloist")
+                == "在 Spotify 设备中选择 Kashishu Soloist"
+                && IslandRenderer.StatusSubtitle(null, "Soloist 请先在设置中填写 API Key")
+                == "托盘菜单 → 设置 → 播放信息源",
+            "soloist island status subtitle");
 
         var urisRequest = LibraryPage.BuildPlayRequest(null, [t1, t2, tracksPage.Items[1], t3], t2, shuffle: false);
         Require(urisRequest is not null

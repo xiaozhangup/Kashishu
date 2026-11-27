@@ -135,8 +135,14 @@ internal sealed class SettingsPage : PanelPage
         var saveKey = Ui.Button("保存并重新连接", accent: true);
         saveKey.Click += (_, _) =>
         {
-            if (!Commit(settings with { SoloistApiKey = soloistKey.Text?.Trim() ?? string.Empty }, restartPlayback: true))
+            var apiKey = soloistKey.Text?.Trim() ?? string.Empty;
+            if (!Commit(settings with { SoloistApiKey = apiKey }, restartPlayback: true))
+            {
                 showToast("保存失败，请查看终端错误");
+                return;
+            }
+            status.Text = soloistStatus?.Invoke();
+            showToast(apiKey.Length == 0 ? "已清除 Soloist API Key" : "已保存 API Key，正在重新连接 Soloist…");
         };
         var keyActions = new Grid
         {

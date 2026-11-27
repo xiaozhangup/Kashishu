@@ -1,3 +1,4 @@
+using System.Collections.Immutable;
 using System.Globalization;
 using System.Net;
 using System.Net.Http.Headers;
@@ -26,7 +27,8 @@ internal sealed record LibraryPlayRequest(
     string? ContextUri,
     string? StartTrackUri,
     IReadOnlyList<string>? TrackUris = null,
-    bool? Shuffle = null);
+    bool? Shuffle = null,
+    string? FallbackTrackUri = null);
 
 internal sealed record LibraryPlayResult(bool ManagedByServer, string? Error = null);
 
@@ -184,14 +186,74 @@ internal sealed partial class SpotifyService
         return map;
     }
 
-    internal async Task SetLibraryFavoriteAsync(string uri, bool saved, CancellationToken token)
+    internal Task SetLibraryFavoriteAsync(string uri, bool saved, CancellationToken token) =>
+        SetLibraryFavoriteForTrackAsync(uri, saved, null, token);
+
+    internal async Task SetLibraryFavoriteForTrackAsync(
+        string uri, bool saved, Func<bool>? isSameTrack, CancellationToken token)
     {
         if (!uri.StartsWith("spotify:track:", StringComparison.Ordinal))
             throw new InvalidOperationException("当前曲目不支持 Spotify 收藏");
         using var response = await SendLibraryRequestAsync(
             saved ? HttpMethod.Put : HttpMethod.Delete,
             "/me/library?uris=" + Uri.EscapeDataString(uri),
-            token);
+            token,
+            throwOnError: true,
+            beforeSend: isSameTrack);
+    }
+
+    internal async Task<bool?> CheckFavoriteIfAuthorizedAsync(string uri, CancellationToken token)
+    {
+        if (!uri.StartsWith("spotify:track:", StringComparison.Ordinal) || DateTimeOffset.UtcNow < _libraryRetryAt)
+            return null;
+        try
+        {
+            using var result = await SendLibraryJsonAsync(HttpMethod.Get,
+                "/me/library/contains?uris=" + Uri.EscapeDataString(uri), token);
+            if (result is null || result.RootElement.ValueKind != JsonValueKind.Array
+                || result.RootElement.GetArrayLength() != 1)
+                return null;
+            return result.RootElement[0].ValueKind switch
+            {
+                JsonValueKind.True => true,
+                JsonValueKind.False => false,
+                _ => null
+            };
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { throw; }
+        catch
+        {
+            return null;
+        }
+    }
+
+    internal async Task<ImmutableArray<ImmutableArray<byte>>> LoadArtistImagesIfAuthorizedAsync(
+        ImmutableArray<string> artistIds, CancellationToken token)
+    {
+        if (artistIds.IsDefaultOrEmpty || _credentials.ClientId.Length == 0 || _credentials.ClientSecret.Length == 0)
+            return [];
+        try
+        {
+            await _playerGate.WaitAsync(token);
+            try
+            {
+                _tokens ??= await LoadTokenAsync(token);
+                if (_tokens is null)
+                    return [];
+                if (_tokens.ExpiresAt <= DateTimeOffset.UtcNow.AddSeconds(30))
+                    _tokens = await RefreshAsync(token);
+            }
+            finally
+            {
+                _playerGate.Release();
+            }
+            return await LoadArtistImagesSafeAsync(artistIds, token);
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { throw; }
+        catch
+        {
+            return [];
+        }
     }
 
     private string? _soloistDeviceId;
@@ -233,15 +295,26 @@ internal sealed partial class SpotifyService
             if (!HasScope(ControlScope))
                 return false;
             if (_tokens!.ExpiresAt <= DateTimeOffset.UtcNow.AddSeconds(30))
-                _tokens = await RefreshLibraryAsync(token);
+                _tokens = await RefreshAsync(token);
 
             var payload = BuildPlayPayload(request);
             var deviceId = Volatile.Read(ref _soloistDeviceId);
+            if (string.IsNullOrEmpty(deviceId))
+            {
+                deviceId = await ResolveDeviceIdAsync(preferredDeviceName, token);
+                if (string.IsNullOrEmpty(deviceId))
+                {
+                    await Task.Delay(200, token);
+                    deviceId = await ResolveDeviceIdAsync(preferredDeviceName, token);
+                }
+                Volatile.Write(ref _soloistDeviceId, deviceId);
+                if (string.IsNullOrEmpty(deviceId))
+                    return false;
+            }
+
             for (var attempt = 0; attempt < 3; attempt++)
             {
-                var path = string.IsNullOrEmpty(deviceId)
-                    ? "/me/player/play"
-                    : "/me/player/play?device_id=" + Uri.EscapeDataString(deviceId);
+                var path = "/me/player/play?device_id=" + Uri.EscapeDataString(deviceId);
                 using var timeout = CancellationTokenSource.CreateLinkedTokenSource(token);
                 timeout.CancelAfter(TimeSpan.FromSeconds(10));
                 using var httpRequest = new HttpRequestMessage(HttpMethod.Put, "https://api.spotify.com/v1" + path)
@@ -259,7 +332,7 @@ internal sealed partial class SpotifyService
 
                 if (response.StatusCode == HttpStatusCode.Unauthorized && attempt == 0)
                 {
-                    _tokens = await RefreshLibraryAsync(token);
+                    _tokens = await RefreshAsync(token);
                     continue;
                 }
 
@@ -270,8 +343,6 @@ internal sealed partial class SpotifyService
                     deviceId = await ResolveDeviceIdAsync(preferredDeviceName, token);
                     Volatile.Write(ref _soloistDeviceId, deviceId);
                     if (!string.IsNullOrEmpty(deviceId))
-                        continue;
-                    if (attempt == 0)
                         continue;
                 }
                 return false;
@@ -581,7 +652,11 @@ internal sealed partial class SpotifyService
     }
 
     private async Task<HttpResponseMessage?> SendLibraryRequestAsync(
-        HttpMethod method, string path, CancellationToken token, bool throwOnError = true)
+        HttpMethod method,
+        string path,
+        CancellationToken token,
+        bool throwOnError = true,
+        Func<bool>? beforeSend = null)
     {
         await _playerGate.WaitAsync(token);
         try
@@ -592,17 +667,36 @@ internal sealed partial class SpotifyService
                 if (!throwOnError) return null;
                 throw new InvalidOperationException("请在设置中切换到 Spotify，填写并保存 Client ID 和 Client Secret，再切回 Soloist。");
             }
+            if (!throwOnError && DateTimeOffset.UtcNow < _libraryRetryAt)
+                return null;
+            if (throwOnError && DateTimeOffset.UtcNow < _libraryRetryAt)
+                throw new InvalidOperationException("Spotify 请求过于频繁，请稍后重试");
+
+            bool HasRequiredScopes() => method == HttpMethod.Get
+                ? HasScope(LibraryReadScope)
+                : HasScope(LibraryReadScope) && HasScope(LibraryModifyScope);
 
             _tokens ??= await LoadTokenAsync(token);
-            if (!HasScope(LibraryReadScope) || !HasScope(LibraryModifyScope) || !HasScope(PlaylistReadScope) || !HasScope(CollaborativeScope))
+            if (!HasRequiredScopes())
             {
                 if (!throwOnError) return null;
                 _tokens = await AuthorizeLibraryAsync(token);
+                if (!HasRequiredScopes())
+                    throw new InvalidOperationException("Spotify 未授予收藏权限，请重新授权");
             }
             else if (_tokens!.ExpiresAt <= DateTimeOffset.UtcNow.AddSeconds(30))
             {
-                _tokens = await RefreshLibraryAsync(token);
+                try
+                {
+                    _tokens = throwOnError ? await RefreshLibraryAsync(token) : await RefreshAsync(token);
+                }
+                catch when (!throwOnError)
+                {
+                    return null;
+                }
             }
+            if (beforeSend is not null && !beforeSend())
+                throw new InvalidOperationException("歌曲已切换，请重试");
 
             for (var attempt = 0; ; attempt++)
             {
@@ -617,10 +711,19 @@ internal sealed partial class SpotifyService
                 var status = response.StatusCode;
                 var retryAfter = (int)status == 429 ? RetryAfter(response) : default;
                 response.Dispose();
+                if ((int)status == 429)
+                    _libraryRetryAt = DateTimeOffset.UtcNow + retryAfter;
                 if (status == HttpStatusCode.Unauthorized && attempt == 0)
                 {
-                    _tokens = await RefreshLibraryAsync(token);
-                    continue;
+                    try
+                    {
+                        _tokens = throwOnError ? await RefreshLibraryAsync(token) : await RefreshAsync(token);
+                        continue;
+                    }
+                    catch when (!throwOnError)
+                    {
+                        return null;
+                    }
                 }
                 if (!throwOnError)
                     return null;
@@ -628,6 +731,7 @@ internal sealed partial class SpotifyService
                 {
                     HttpStatusCode.Forbidden => "Spotify 拒绝操作，请检查账号权限或应用设置",
                     HttpStatusCode.Unauthorized => "Spotify 库授权已失效，请重试",
+                    HttpStatusCode.BadRequest or HttpStatusCode.NotFound => "当前曲目不支持 Spotify 收藏",
                     (HttpStatusCode)429 => $"Spotify 请求过于频繁，请在 {Math.Ceiling(retryAfter.TotalSeconds):0} 秒后重试",
                     _ => $"Spotify 请求失败（HTTP {(int)status}）"
                 });
@@ -640,6 +744,14 @@ internal sealed partial class SpotifyService
         catch (HttpRequestException exception) when (throwOnError)
         {
             throw new InvalidOperationException("无法连接 Spotify，请检查网络后重试", exception);
+        }
+        catch (System.Net.Sockets.SocketException exception) when (throwOnError)
+        {
+            throw new InvalidOperationException("无法打开 Spotify 授权回调，请检查本机 43821 端口", exception);
+        }
+        catch (TokenEndpointException exception) when (throwOnError)
+        {
+            throw new InvalidOperationException("Spotify 授权失败，请检查设置中的 Spotify 参数", exception);
         }
         finally
         {

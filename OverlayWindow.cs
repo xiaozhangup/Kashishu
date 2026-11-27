@@ -2555,6 +2555,10 @@ internal sealed class IslandRenderer : IDisposable
             return status ?? string.Join(", ", track.Artists);
         if (status == PlaybackStore.MissingSpotifyCredentialsStatus)
             return "托盘菜单 → 设置 → 播放信息源";
+        if (status?.Contains("Soloist", StringComparison.Ordinal) == true)
+            return status.Contains("设置", StringComparison.Ordinal)
+                ? "托盘菜单 → 设置 → 播放信息源"
+                : "在 Spotify 设备中选择 Kashishu Soloist";
         return status?.Contains("MPRIS", StringComparison.Ordinal) == true
             ? "读取本机播放器的 MPRIS 信息"
             : "首次使用 Spotify 会打开浏览器授权";

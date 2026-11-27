@@ -31,6 +31,9 @@ internal sealed class SoloistService(
     private string _repeat = "off";
     private double? _volume;
     private ImmutableHashSet<string> _availableActions = [];
+    private string? _favoriteUri;
+    private bool? _isFavorite;
+    private int _favoriteVersion;
 
     public string Status => Volatile.Read(ref _status);
 
@@ -92,7 +95,8 @@ internal sealed class SoloistService(
             finally
             {
                 Volatile.Write(ref _socket, null);
-                ResetState(Starting);
+                if (!cancellationToken.IsCancellationRequested)
+                    ResetState(Starting);
             }
             cancellationToken.ThrowIfCancellationRequested();
             if (process.HasExited)
@@ -113,13 +117,17 @@ internal sealed class SoloistService(
         {
             if (_sourceTrack is null || _track is null || lifetime.IsCancellationRequested)
                 return false;
-            StartTrackLoad(_sourceTrack, _track);
+            StartTrackLoad(_sourceTrack, _track, forceLyricsRefresh: true);
+            Publish();
             return true;
         }
     }
 
     public async Task<string?> ControlAsync(PlaybackCommand command, CancellationToken token)
     {
+        if (command.Action == PlaybackAction.Favorite)
+            return await SetFavoriteControlAsync(command, token);
+
         await _controls.WaitAsync(token);
         try
         {
@@ -127,19 +135,76 @@ internal sealed class SoloistService(
             if (command.TrackId is { } id && snapshot.Track?.Id != id)
                 return "歌曲已切换，请重试";
 
-            return command.Action switch
+            switch (command.Action)
             {
-                PlaybackAction.PlayPause => await SendAsync(snapshot.IsPlaying ? "pause" : "play", token),
-                PlaybackAction.Previous => await SkipPreviousAsync(snapshot, token),
-                PlaybackAction.Next => await SendAsync("skip_next", token),
-                PlaybackAction.Seek when snapshot.Track is { } track => await SendAsync("seek", token,
-                    "position_ms", (long)Math.Clamp(command.Value, 0, track.DurationMs)),
-                PlaybackAction.Shuffle => await SendAsync("set_shuffle", token, "enabled", command.Value > 0),
-                PlaybackAction.Repeat => await SetRepeatAsync(command.Value, token),
-                PlaybackAction.Volume => await SendAsync("set_volume", token, "volume",
-                    (int)Math.Round(Math.Clamp(command.Value, 0, 1) * 100)),
-                _ => "当前播放状态不支持此操作"
-            };
+                case PlaybackAction.PlayPause:
+                    return await SendAsync(snapshot.IsPlaying ? "pause" : "play", token);
+                case PlaybackAction.Previous:
+                    return await SkipPreviousAsync(snapshot, token);
+                case PlaybackAction.Next:
+                    return await SendAsync("skip_next", token);
+                case PlaybackAction.Seek when snapshot.Track is { } track:
+                {
+                    var positionMs = (long)Math.Clamp(command.Value, 0, Math.Max(0, track.DurationMs - 1));
+                    var error = await SendAsync("seek", token, "position_ms", positionMs);
+                    if (error is null)
+                    {
+                        lock (_stateGate)
+                        {
+                            if (_track?.Id == track.Id)
+                            {
+                                _position = positionMs;
+                                _positionAt = Stopwatch.GetTimestamp();
+                                Publish();
+                            }
+                        }
+                    }
+                    return error;
+                }
+                case PlaybackAction.Shuffle:
+                {
+                    var enabled = command.Value > 0;
+                    var error = await SendAsync("set_shuffle", token, "enabled", enabled);
+                    if (error is null)
+                    {
+                        lock (_stateGate)
+                        {
+                            _shuffle = enabled;
+                            Publish();
+                        }
+                    }
+                    return error;
+                }
+                case PlaybackAction.Repeat:
+                {
+                    var error = await SetRepeatAsync(command.Value, token);
+                    if (error is null)
+                    {
+                        lock (_stateGate)
+                        {
+                            _repeat = command.Value switch { 1 => "context", 2 => "track", _ => "off" };
+                            Publish();
+                        }
+                    }
+                    return error;
+                }
+                case PlaybackAction.Volume:
+                {
+                    var clamped = Math.Clamp(command.Value, 0, 1);
+                    var error = await SendAsync("set_volume", token, "volume", (int)Math.Round(clamped * 100));
+                    if (error is null)
+                    {
+                        lock (_stateGate)
+                        {
+                            _volume = clamped;
+                            Publish();
+                        }
+                    }
+                    return error;
+                }
+                default:
+                    return "当前播放状态不支持此操作";
+            }
         }
         finally { _controls.Release(); }
     }
@@ -185,7 +250,7 @@ internal sealed class SoloistService(
             if (await _library.StartLibraryPlaybackAsync(request, SoloistProcess.DeviceName, linked.Token))
                 return new(true, null);
 
-            if (request.StartTrackUri is { } fallbackUri)
+            if ((request.FallbackTrackUri ?? request.StartTrackUri) is { } fallbackUri)
                 return new(false, await SendAsync("play", linked.Token, "uri", fallbackUri));
 
             return new(false, "当前无法从此列表开始播放");
@@ -235,13 +300,34 @@ internal sealed class SoloistService(
         IReadOnlyList<string> uris, CancellationToken token)
     {
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(token, lifetime);
-        return await _library.CheckFavoritesAsync(uris, linked.Token);
+        var states = await _library.CheckFavoritesAsync(uris, linked.Token);
+        if (states.Count > 0)
+        {
+            lock (_stateGate)
+            {
+                if (_favoriteUri is { } current && _isFavorite is null && states.TryGetValue(current, out var saved))
+                {
+                    _isFavorite = saved;
+                    Publish();
+                }
+            }
+        }
+        return states;
     }
 
     public async Task SetFavoriteAsync(string uri, bool saved, CancellationToken token)
     {
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(token, lifetime);
         await _library.SetLibraryFavoriteAsync(uri, saved, linked.Token);
+        lock (_stateGate)
+        {
+            if (_favoriteUri == uri)
+            {
+                _favoriteVersion++;
+                _isFavorite = saved;
+                Publish();
+            }
+        }
     }
 
     internal Task WaitForLibraryAsync() => _library.WaitForLibraryAsync();
@@ -317,6 +403,75 @@ internal sealed class SoloistService(
         }
     }
 
+    internal static string? GetFavoriteUri(TrackInfo? track) =>
+        track is not null && SongBanner.SpotifyUrl(track.Id, PlaybackSourcePreference.Soloist) is not null
+            ? "spotify:track:" + track.Id
+            : null;
+
+    private async Task<string?> SetFavoriteControlAsync(PlaybackCommand command, CancellationToken token)
+    {
+        var snapshot = store.Snapshot;
+        if (command.TrackId is null || command.TrackId != snapshot.Track?.Id)
+            return "歌曲已切换，请重试";
+        var favoriteUri = GetFavoriteUri(snapshot.Track);
+        if (favoriteUri is null)
+            return "当前曲目不支持 Spotify 收藏";
+
+        var saved = command.Value > 0;
+        try
+        {
+            await _library.SetLibraryFavoriteForTrackAsync(
+                favoriteUri,
+                saved,
+                () => store.Snapshot.Track?.Id == command.TrackId,
+                token);
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception exception)
+        {
+            return exception.Message;
+        }
+
+        lock (_stateGate)
+        {
+            if (_favoriteUri == favoriteUri)
+            {
+                _favoriteVersion++;
+                _isFavorite = saved;
+                Publish();
+            }
+        }
+        return null;
+    }
+
+    private void StartFavoriteRead(string favoriteUri, int version)
+    {
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                var saved = await _library.CheckFavoriteIfAuthorizedAsync(favoriteUri, lifetime);
+                if (saved is not { } value || lifetime.IsCancellationRequested)
+                    return;
+                lock (_stateGate)
+                {
+                    if (_favoriteUri != favoriteUri || _favoriteVersion != version || _isFavorite == value)
+                        return;
+                    _isFavorite = value;
+                    Publish();
+                }
+            }
+            catch (OperationCanceledException) when (lifetime.IsCancellationRequested) { }
+            catch (Exception exception)
+            {
+                Console.Error.WriteLine($"[soloist] 收藏状态读取失败：{exception.Message}");
+            }
+        });
+    }
+
     private async Task<string?> SetRepeatAsync(double mode, CancellationToken token)
     {
         var first = mode == 2 ? "set_repeat_context" : "set_repeat_track";
@@ -360,8 +515,7 @@ internal sealed class SoloistService(
                 case "playback_state":
                     _active = Boolean(root, "is_active") == true;
                     _playback = String(root, "status") ?? "idle";
-                    _availableActions = Property(root, "available_actions") is { ValueKind: JsonValueKind.Object } actions
-                        ? actions.EnumerateObject().Select(action => action.Name).ToImmutableHashSet() : [];
+                    _availableActions = ParseAvailableActions(Property(root, "available_actions"));
                     SetTrack(Property(root, "item"));
                     SetPosition(Property(root, "position"), now);
                     SetOptions(Property(root, "options"));
@@ -372,10 +526,19 @@ internal sealed class SoloistService(
                     _active = Boolean(root, "is_active") == true;
                     break;
                 case "playback_changed":
-                    _position = (long)previous.PositionMs;
-                    _positionAt = now;
+                    if (Boolean(root, "is_active") is { } active)
+                        _active = active;
                     _playback = String(root, "status") ?? "idle";
-                    if (_playback == "playing" && _speed <= 0) _speed = 1d;
+                    if (Property(root, "position").ValueKind == JsonValueKind.Object)
+                    {
+                        SetPosition(Property(root, "position"), now);
+                    }
+                    else
+                    {
+                        _position = (long)previous.PositionMs;
+                        _positionAt = now;
+                        if (_playback == "playing" && _speed <= 0) _speed = 1d;
+                    }
                     break;
                 case "track_changed":
                     if (SetTrack(Property(root, "item")))
@@ -403,9 +566,29 @@ internal sealed class SoloistService(
         }
     }
 
+    internal static ImmutableHashSet<string> ParseAvailableActions(JsonElement actions)
+    {
+        if (actions.ValueKind == JsonValueKind.Array)
+        {
+            return actions.EnumerateArray()
+                .Where(item => item.ValueKind == JsonValueKind.String)
+                .Select(item => item.GetString()!)
+                .ToImmutableHashSet(StringComparer.Ordinal);
+        }
+        if (actions.ValueKind != JsonValueKind.Object)
+            return [];
+
+        return actions.EnumerateObject()
+            .Where(action => action.Value.ValueKind is not (JsonValueKind.False or JsonValueKind.Null)
+                && Boolean(action.Value, "allowed") != false)
+            .Select(action => action.Name)
+            .ToImmutableHashSet(StringComparer.Ordinal);
+    }
+
     private void SetPosition(JsonElement position, long now)
     {
-        _speed = Math.Max(0, Number(position, "speed") ?? 0);
+        var defaultSpeed = _playback == "playing" ? 1d : 0d;
+        _speed = Math.Max(0, Number(position, "speed") ?? defaultSpeed);
         var elapsed = Number(position, "timestamp_ms") is { } timestamp
             ? Math.Max(0, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - timestamp) : 0;
         _position = (long)Math.Max(0, (Number(position, "position_ms") ?? 0) + elapsed * _speed);
@@ -423,18 +606,37 @@ internal sealed class SoloistService(
         if (lifetime.IsCancellationRequested)
             return;
         var track = _active && _playback != "idle" ? _track : null;
+        var favoriteUri = GetFavoriteUri(track);
+        if (_favoriteUri != favoriteUri)
+        {
+            _favoriteUri = favoriteUri;
+            _isFavorite = null;
+            _favoriteVersion++;
+            if (favoriteUri is not null)
+                StartFavoriteRead(favoriteUri, _favoriteVersion);
+        }
+
+        var artists = track is null ? string.Empty : string.Join(", ", track.Artists);
         var status = Status != Connected ? Status
             : track is null ? PlaybackStore.NoActiveSoloistPlaybackStatus
-            : track.Lyrics.IsDefaultOrEmpty ? (_loadingLyrics ? "正在获取歌词…" : "暂无歌词")
-            : string.Join(", ", track.Artists);
+            : track.Lyrics.IsDefaultOrEmpty
+                ? (_loadingLyrics ? "正在获取歌词…" : string.IsNullOrEmpty(artists) ? "未找到歌词" : $"未找到歌词 · {artists}")
+            : artists;
+        var canShuffle = _availableActions.Contains("shuffle") || _availableActions.Contains("set_shuffle");
+        var canRepeat = _availableActions.Contains("set_repeat")
+            || _availableActions.Contains("repeat")
+            || _availableActions.Contains("set_repeat_context")
+            || _availableActions.Contains("set_repeat_track");
         var controls = track is null ? new PlaybackControls() : new PlaybackControls(
             _availableActions.Contains("play") || _availableActions.Contains("pause"),
             _availableActions.Contains("skip_prev"),
             _availableActions.Contains("skip_next"),
-            _availableActions.Contains("seek"),
-            _availableActions.Contains("shuffle") ? _shuffle : null,
-            _availableActions.Contains("set_repeat") ? _repeat : null,
-            _volume);
+            _availableActions.Contains("seek") && track.DurationMs > 0,
+            canShuffle ? _shuffle : null,
+            canRepeat ? _repeat : null,
+            _volume,
+            favoriteUri is not null,
+            _isFavorite);
         store.Update(new PlaybackSnapshot(track, _position, _positionAt, track is not null && _playback == "playing",
             status, _speed) { Controls = controls });
     }
@@ -450,6 +652,9 @@ internal sealed class SoloistService(
             _active = false;
             _availableActions = [];
             _volume = null;
+            _favoriteUri = null;
+            _isFavorite = null;
+            _favoriteVersion++;
             _position = 0;
             _positionAt = Stopwatch.GetTimestamp();
             CancelTrackLoad();
@@ -493,60 +698,66 @@ internal sealed class SoloistService(
         return changedId;
     }
 
-    private void StartTrackLoad(SourceTrack source, TrackInfo track)
+    private void StartTrackLoad(SourceTrack source, TrackInfo track, bool forceLyricsRefresh = false)
     {
         CancelTrackLoad();
         _trackLoad = CancellationTokenSource.CreateLinkedTokenSource(lifetime);
         var token = _trackLoad.Token;
         var lyricsSource = (LyricsSourcePreference)Volatile.Read(ref _lyricsSource);
-        _loadingLyrics = true;
+        var needLyrics = forceLyricsRefresh || track.Lyrics.IsDefaultOrEmpty || track.LyricsSource != lyricsSource;
+        _loadingLyrics = needLyrics;
         _ = Task.Run(async () =>
         {
             try
             {
-                var lyrics = SpotifyService.LoadLyricsSafeAsync(source, lyricsSource, token);
-                var cover = SpotifyService.LoadImageSafeAsync(source.AlbumArtUrl, token);
+                var lyrics = needLyrics
+                    ? SpotifyService.LoadLyricsSafeAsync(source, lyricsSource, token)
+                    : Task.FromResult(track.Lyrics);
+                var cover = track.AlbumArtBytes.IsDefaultOrEmpty
+                    ? SpotifyService.LoadImageSafeAsync(source.AlbumArtUrl, token)
+                    : Task.FromResult(track.AlbumArtBytes);
+                var artists = track.ArtistImageBytes.IsDefaultOrEmpty && !source.ArtistIds.IsDefaultOrEmpty
+                    ? _library.LoadArtistImagesIfAuthorizedAsync(source.ArtistIds, token)
+                    : Task.FromResult(track.ArtistImageBytes);
+
+                void ApplyUpdate(Func<TrackInfo, TrackInfo> update, bool lyricsCompleted = false)
+                {
+                    lock (_stateGate)
+                    {
+                        token.ThrowIfCancellationRequested();
+                        if (_track is null || _track.Id != source.Id)
+                            return;
+                        _track = update(_track);
+                        track = _track;
+                        if (lyricsCompleted)
+                            _loadingLyrics = false;
+                        Publish();
+                    }
+                }
 
                 async Task PublishLyricsAsync()
                 {
                     var loaded = await lyrics;
-                    if (!loaded.IsDefaultOrEmpty)
-                        track = track with { Lyrics = loaded, LyricsSource = lyricsSource };
-                    UpdateTrack(lyricsLoaded: true);
+                    ApplyUpdate(current => !loaded.IsDefaultOrEmpty
+                        ? current with { Lyrics = loaded, LyricsSource = lyricsSource }
+                        : current, lyricsCompleted: true);
                 }
 
                 async Task PublishCoverAsync()
                 {
                     var image = TrackCache.PreferLargerImage(track.AlbumArtBytes, await cover);
                     if (!image.Equals(track.AlbumArtBytes))
-                    {
-                        track = track with { AlbumArtBytes = image };
-                        UpdateTrack(lyricsLoaded: false);
-                    }
+                        ApplyUpdate(current => current with { AlbumArtBytes = image });
                 }
 
-                void UpdateTrack(bool lyricsLoaded)
+                async Task PublishArtistsAsync()
                 {
-                    lock (_stateGate)
-                    {
-                        token.ThrowIfCancellationRequested();
-                        _track = track;
-                        if (lyricsLoaded)
-                            _loadingLyrics = false;
-                        Publish();
-                    }
+                    var images = await artists;
+                    if (!images.IsDefaultOrEmpty && !images.Equals(track.ArtistImageBytes))
+                        ApplyUpdate(current => current with { ArtistImageBytes = images });
                 }
 
-                if (await Task.WhenAny(lyrics, cover) == lyrics)
-                {
-                    await PublishLyricsAsync();
-                    await PublishCoverAsync();
-                }
-                else
-                {
-                    await PublishCoverAsync();
-                    await PublishLyricsAsync();
-                }
+                await Task.WhenAll(PublishLyricsAsync(), PublishCoverAsync(), PublishArtistsAsync());
                 token.ThrowIfCancellationRequested();
                 TrackCache.SaveIfChanged(track);
             }
@@ -562,7 +773,7 @@ internal sealed class SoloistService(
         _loadingLyrics = false;
     }
 
-    private static SourceTrack? ParseEntity(JsonElement item)
+    internal static SourceTrack? ParseEntity(JsonElement item)
     {
         const string prefix = "spotify:track:";
         var uri = String(item, "uri");
@@ -574,17 +785,33 @@ internal sealed class SoloistService(
             return null;
         var album = Property(Property(metadata, "parent"), "entity");
         var creators = Property(metadata, "creators");
-        var artists = creators.ValueKind == JsonValueKind.Array
-            ? creators.EnumerateArray().Select(creator => EntityName(Property(creator, "entity")))
-                .OfType<string>().ToImmutableArray()
-            : [];
+        var artists = ImmutableArray.CreateBuilder<string>();
+        var artistIds = ImmutableArray.CreateBuilder<string>();
+        if (creators.ValueKind == JsonValueKind.Array)
+        {
+            const string artistPrefix = "spotify:artist:";
+            foreach (var creator in creators.EnumerateArray())
+            {
+                var entity = Property(creator, "entity");
+                if (EntityName(entity) is { Length: > 0 } artistName)
+                    artists.Add(artistName);
+                var artistUri = String(entity, "uri") ?? String(creator, "uri");
+                if (artistUri is not null && artistUri.StartsWith(artistPrefix, StringComparison.Ordinal))
+                {
+                    var artistId = artistUri[artistPrefix.Length..];
+                    if (artistId.Length > 0)
+                        artistIds.Add(artistId);
+                }
+            }
+        }
         var covers = Property(Property(metadata, "visual_identity"), "cover");
         var cover = covers.ValueKind == JsonValueKind.Array
             ? covers.EnumerateArray().OrderByDescending(image => String(image, "size") switch
                 { "xlarge" => 4, "large" => 3, "default" => 2, _ => 1 })
                 .Select(image => String(image, "url")).OfType<string>().FirstOrDefault()
             : null;
-        return new SourceTrack(uri[prefix.Length..], name, artists, [], [], EntityName(album) ?? string.Empty,
+        return new SourceTrack(uri[prefix.Length..], name, artists.ToImmutable(), artistIds.ToImmutable(), [],
+            EntityName(album) ?? string.Empty,
             (long)Math.Max(0, Number(Property(metadata, "playback"), "duration_ms") ?? 0), null, cover)
         {
             ShareUrl = SongBanner.SpotifyUrl(uri, PlaybackSourcePreference.Soloist)
